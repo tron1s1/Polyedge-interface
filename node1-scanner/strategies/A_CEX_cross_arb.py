@@ -94,7 +94,7 @@ DEFAULT_CONFIG = {
 
     # Safety
     "skip_during_high_volatility":  True,   # Skip if BTC 1min change > 1%
-    "max_concurrent_trades":        3,       # Never more than 3 open at once
+    "max_concurrent_trades":        50,      # Paper: instant so 50 fine; live: set to 3 via config override
 }
 
 VERSION_TAG = "v1-base"
@@ -1026,24 +1026,67 @@ class Strategy(BaseStrategy):
 
     async def run_forever(self) -> None:
         """
-        Dedicated continuous scan loop — launched as its own asyncio task by
-        the scanner, completely independent of the market routing pipeline.
-
-        Scans ALL symbols in Redis price cache on every tick.
-        No top-N filter. No pre-routing gate. Every symbol is checked.
-        Sleeps 500ms between scans — fast enough to catch gaps, slow enough
-        not to starve other scanner tasks.
+        Dedicated continuous scan loop — completely independent of scanner routing.
+        Runs two concurrent sub-loops:
+          1. _price_refresh_loop  — keeps KuCoin/Coinbase prices fresh in Redis
+          2. _trade_loop          — scans ALL symbols and executes every profitable gap
         """
         logger.info("cex_arb_own_loop_started")
+        await asyncio.gather(
+            self._price_refresh_loop(),
+            self._trade_loop(),
+        )
+
+    async def _price_refresh_loop(self) -> None:
+        """
+        Independently refresh KuCoin (and Coinbase if available) prices every 15s.
+        Ensures CEX arb has fresh multi-exchange data even if the scanner's
+        ingestion cycle hasn't run yet or is slow.
+        """
+        while True:
+            try:
+                from ingestion.kucoin_adapter import KuCoinAdapter
+                kc = KuCoinAdapter(self._cache)
+                await kc.fetch_markets()
+                logger.debug("cex_arb_price_refresh_done", exchange="kucoin")
+            except Exception as e:
+                logger.debug("cex_arb_price_refresh_error", error=str(e))
+            try:
+                from ingestion.coinbase_adapter import CoinbaseAdapter
+                cb = CoinbaseAdapter(self._cache)
+                await cb.fetch_markets()
+            except Exception:
+                pass
+            try:
+                from ingestion.cryptocom_adapter import CryptocomAdapter
+                cdc = CryptocomAdapter(self._cache)
+                await cdc.fetch_markets()
+            except Exception:
+                pass
+            await asyncio.sleep(15)  # Refresh every 15s (well within 5s price TTL with overlap)
+
+    async def _trade_loop(self) -> None:
+        """
+        Core trading loop: scan ALL symbols every 500ms, execute ALL profitable gaps
+        in parallel (not just #1 best). For paper mode every trade is instant so
+        many can fire per tick. For live mode, concurrent limit applies.
+        """
         while True:
             try:
                 await self._tick()
             except Exception as e:
                 logger.warning("cex_arb_loop_error", error=str(e))
-            await asyncio.sleep(0.5)  # 500ms between full scans
+            await asyncio.sleep(0.5)
 
     async def _tick(self) -> None:
-        """One scan-and-execute cycle."""
+        """
+        One full scan-and-execute cycle.
+        Executes ALL valid opportunities per tick (not just the best one).
+        Each opportunity fires as a concurrent asyncio task so they don't
+        block each other. Rate-limited to MAX_TRADES_PER_TICK per cycle.
+        """
+        MAX_TRADES_PER_TICK = 20  # Hard cap per 500ms tick to avoid DB flooding
+
         allowed, reason = self.check_kill_switch(self._config.min_trade_size_usdc)
         if not allowed:
             return
@@ -1059,91 +1102,127 @@ class Strategy(BaseStrategy):
         if not opportunities:
             return
 
-        best = opportunities[0]
-
-        valid, reason = self._planner.validate(best)
-        if not valid:
-            return
-
-        if self._float_tracker:
-            can_buy = await self._float_tracker.can_afford(best.buy_exchange, best.trade_size_usdc)
-            if not can_buy:
-                return
-
-        # Kelly sizing
-        sized = self.apply_kelly(best.trade_size_usdc)
-        best.trade_size_usdc = max(
-            self._config.min_trade_size_usdc,
-            min(sized, self._config.max_trade_size_usdc),
-        )
-        best.expected_profit_usdc = best.trade_size_usdc * best.net_profit_pct / 100
-
-        if best.expected_profit_usdc < 0.20:
-            return
-
-        logger.info("cex_opportunity",
-                    symbol=best.symbol,
-                    buy_ex=best.buy_exchange,
-                    sell_ex=best.sell_exchange,
-                    gap_pct=round(best.gap_pct, 4),
-                    net_pct=round(best.net_profit_pct, 4),
-                    expected_usdc=round(best.expected_profit_usdc, 2))
-
         regime = "NEUTRAL"
         if self._cache:
             regime = (await self._cache.get("market:regime")) or "NEUTRAL"
 
-        if self._float_tracker:
-            await self._float_tracker.reserve(best.buy_exchange, best.trade_size_usdc)
-        if self._planner:
-            self._planner.register_trade_start(best.symbol)
+        # Collect all valid opportunities (skip same-symbol duplicates within this tick)
+        seen_symbols: set = set()
+        to_execute: List[ArbOpportunity] = []
 
+        for opp in opportunities:
+            if len(to_execute) >= MAX_TRADES_PER_TICK:
+                break
+
+            # Skip if same symbol already queued this tick (avoid double-trading same gap)
+            sig = f"{opp.symbol}:{opp.buy_exchange}:{opp.sell_exchange}"
+            if sig in seen_symbols:
+                continue
+
+            valid, _ = self._planner.validate(opp)
+            if not valid:
+                continue
+
+            # Float checks only matter for live trading — paper has no real capital
+            if not self._is_paper and self._float_tracker:
+                can_buy = await self._float_tracker.can_afford(opp.buy_exchange, opp.trade_size_usdc)
+                if not can_buy:
+                    continue
+
+            # Kelly sizing
+            sized = self.apply_kelly(opp.trade_size_usdc)
+            opp.trade_size_usdc = max(
+                self._config.min_trade_size_usdc,
+                min(sized, self._config.max_trade_size_usdc),
+            )
+            opp.expected_profit_usdc = opp.trade_size_usdc * opp.net_profit_pct / 100
+            if opp.expected_profit_usdc < 0.20:
+                continue
+
+            seen_symbols.add(sig)
+            to_execute.append(opp)
+
+            # Reserve float only for live trading
+            if not self._is_paper and self._float_tracker:
+                await self._float_tracker.reserve(opp.buy_exchange, opp.trade_size_usdc)
+            self._planner.register_trade_start(opp.symbol)
+
+        if not to_execute:
+            return
+
+        logger.info("cex_tick_executing",
+                    count=len(to_execute),
+                    symbols=[o.symbol for o in to_execute[:5]],
+                    total_found=len(opportunities))
+
+        # Execute all chosen opportunities concurrently — collect rows for batch DB write
+        raw_results = await asyncio.gather(
+            *[self._execute_one(opp, regime) for opp in to_execute],
+            return_exceptions=True,
+        )
+
+        # Batch-insert all trade rows in one DB call (avoids 20 simultaneous connections)
+        rows = [r for r in raw_results if isinstance(r, dict)]
+        if rows:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    lambda: self._db.table("trades").insert(rows).execute()
+                )
+            except Exception as e:
+                logger.warning("cex_batch_log_error", error=str(e), count=len(rows))
+
+    async def _execute_one(self, opp: ArbOpportunity, regime: str) -> None:
+        """Execute a single arb opportunity and log result."""
         try:
             if self._is_paper:
-                result = await self._paper_sim.simulate_trade(best, self._config)
+                result = await self._paper_sim.simulate_trade(opp, self._config)
             else:
-                result = await self._live_executor.execute(best, self._ks)
+                result = await self._live_executor.execute(opp, self._ks)
 
-            if self._float_tracker:
+            if not self._is_paper and self._float_tracker:
                 if result.success:
                     await self._float_tracker.release(
-                        best.sell_exchange, best.trade_size_usdc, result.net_profit_usdc
+                        opp.sell_exchange, opp.trade_size_usdc, result.net_profit_usdc
                     )
                 else:
-                    await self._float_tracker.release(best.buy_exchange, best.trade_size_usdc)
+                    await self._float_tracker.release(opp.buy_exchange, opp.trade_size_usdc)
 
             self._stats["total_trades"] += 1
-            pair_key = f"{best.buy_exchange}-{best.sell_exchange}"
+            pair_key = f"{opp.buy_exchange}-{opp.sell_exchange}"
             if pair_key not in self._stats["by_pair"]:
                 self._stats["by_pair"][pair_key] = {"wins": 0, "losses": 0, "pnl": 0.0}
 
             if result.success and result.net_profit_usdc > 0:
                 self._stats["wins"] += 1
+                self._stats["total_pnl_usdc"] += result.net_profit_usdc
                 self._stats["by_pair"][pair_key]["wins"] += 1
                 self._stats["by_pair"][pair_key]["pnl"] += result.net_profit_usdc
             else:
+                self._stats["losses"] += 1
                 self._stats["by_pair"][pair_key]["losses"] += 1
 
-            await self._log_trade(best, result, regime)
+            await self._log_trade(opp, result, regime)
 
             if not self._is_paper and result.success and result.net_profit_usdc > 0:
                 await self._tax.on_trade_closed(
-                    trade_id=best.opportunity_id,
+                    trade_id=opp.opportunity_id,
                     strategy_id=self.STRATEGY_ID,
                     pnl_usdc=result.net_profit_usdc,
-                    exchange=best.sell_exchange,
-                    asset=best.symbol[:3],
-                    gross_sell_value_usdc=best.trade_size_usdc,
+                    exchange=opp.sell_exchange,
+                    asset=opp.symbol[:3],
+                    gross_sell_value_usdc=opp.trade_size_usdc,
                 )
         finally:
             if self._planner:
-                self._planner.register_trade_end(best.symbol)
+                self._planner.register_trade_end(opp.symbol)
 
     async def _log_trade(
         self, opp: ArbOpportunity, result: TradeResult, regime: str
     ) -> None:
         try:
-            await self._db.table("trades").insert({
+            row = {
                 "id":               opp.opportunity_id,
                 "strategy_id":      self.STRATEGY_ID,
                 "version_tag":      VERSION_TAG,
@@ -1170,7 +1249,13 @@ class Strategy(BaseStrategy):
                 "exit_price":       result.sell_fill_price,
                 "pnl_usdc":         result.net_profit_usdc,
                 "resolved_at":      datetime.now(timezone.utc).isoformat(),
-            }).execute()
+            }
+            # supabase-py execute() is synchronous — run in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: self._db.table("trades").insert(row).execute()
+            )
         except Exception as e:
             logger.warning("cex_trade_log_error", error=str(e))
 
@@ -1594,7 +1679,7 @@ class CEXPromotionGates:
 
     async def _get_paper_trades(self) -> list:
         try:
-            result = await self._db.table("trades").select(
+            result = self._db.table("trades").select(
                 "id,pnl_usdc,edge_detected,latency_ms,ai_reasoning,outcome,created_at"
             ).eq("strategy_id", "A_CEX_cross_arb").eq("is_paper", True).execute()
             return result.data or []

@@ -35,7 +35,7 @@ async def run_scanner():
     logger.info("strategies_wired_to_event_bus", count=wired)
 
     # Run all async tasks (scan loop, websocket, enrichment, etc.)
-    await asyncio.gather(
+    tasks = [
         scanner._run_event_bus(),
         scanner._run_websocket_feed(),
         scanner._run_enrichment_loop(),
@@ -46,7 +46,16 @@ async def run_scanner():
         scanner._run_heartbeat_loop(),
         scanner._run_cache_cleanup_loop(),
         scanner._run_config_sync_loop(),
-    )
+    ]
+
+    # Launch dedicated loops for strategies that manage their own scanning
+    # (e.g. A_CEX_cross_arb scans all Redis symbols independently of the routing pipeline)
+    for strat in scanner.registry.get_all().values():
+        if getattr(strat, "RUNS_OWN_LOOP", False) and hasattr(strat, "run_forever"):
+            logger.info("strategy_own_loop_launched", strategy=strat.STRATEGY_ID)
+            tasks.append(strat.run_forever())
+
+    await asyncio.gather(*tasks)
 
 
 async def run_health_api():

@@ -834,7 +834,7 @@ class TriangleTradeLogger:
         }
 
         try:
-            await self._db.table("trades").insert(record).execute()
+            self._db.table("trades").insert(record).execute()
         except Exception as e:
             logger.error("triangle_trade_log_error", error=str(e), trade_id=trade_id)
 
@@ -851,7 +851,7 @@ class TriangleTradeLogger:
         This data trains the version comparison system.
         """
         try:
-            await self._db.table("latency_versions").upsert({
+            self._db.table("latency_versions").upsert({
                 "version_tag": f"tri-{opportunity.triangle_id}-{VERSION_TAG}",
                 "strategy_id": "A_M1_triangular_arb",
                 "node_id": "singapore-01",

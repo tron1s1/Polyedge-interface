@@ -396,7 +396,7 @@ class PositionManager:
         Enforces max_total_deployed and deduplicates by symbol — marks excess as closed.
         """
         try:
-            result = await self._db.table("funding_positions").select("*").eq(
+            result = self._db.table("funding_positions").select("*").eq(
                 "status", "holding"
             ).eq("node_id", "singapore-01").execute()
 
@@ -423,7 +423,7 @@ class PositionManager:
             # Mark excess positions as closed in DB so they don't re-appear
             for pid in excess_ids:
                 try:
-                    await self._db.table("funding_positions").update({
+                    self._db.table("funding_positions").update({
                         "status": "closed",
                         "close_data": {"reason": "excess_on_startup", "closed_at": datetime.now(timezone.utc).isoformat()}
                     }).eq("id", pid).execute()
@@ -788,7 +788,7 @@ class FundingTracker:
     ) -> None:
         """Record funding payment to Supabase."""
         try:
-            await self._db.table("funding_payments").insert({
+            self._db.table("funding_payments").insert({
                 "position_id": pos.position_id,
                 "symbol": pos.symbol,
                 "payment_time": payment_time.isoformat(),
@@ -808,7 +808,7 @@ class FundingTracker:
         """Write funding totals back to funding_positions row so API/dashboard
         can read real P&L without waiting for position close."""
         try:
-            await self._db.table("funding_positions").update({
+            self._db.table("funding_positions").update({
                 "funding_collected_usdc":   round(pos.funding_collected_usdc, 6),
                 "funding_payments_received": pos.funding_payments_received,
             }).eq("id", pos.position_id).execute()
@@ -1169,7 +1169,7 @@ class Strategy(BaseStrategy):
 
     async def _log_position_open(self, pos: OpenPosition, fill: dict, regime: str) -> None:
         try:
-            await self._db.table("funding_positions").insert({
+            self._db.table("funding_positions").insert({
                 "id": pos.position_id,
                 "symbol": pos.symbol,
                 "direction": pos.direction.value,
@@ -1194,7 +1194,7 @@ class Strategy(BaseStrategy):
 
     async def _log_position_close(self, pos: OpenPosition, close_data: dict, total_pnl: float) -> None:
         try:
-            await self._db.table("funding_positions").update({
+            self._db.table("funding_positions").update({
                 "status": "closed",
                 "funding_collected_usdc": pos.funding_collected_usdc,
                 "funding_payments_received": pos.funding_payments_received,
@@ -1275,7 +1275,7 @@ class Strategy(BaseStrategy):
                 k for k, v in gates["gates"].items() if not v["passed"]
             ])
             return False
-        await self._db.table("strategy_flags").update({
+        self._db.table("strategy_flags").update({
             "enabled": True, "mode": "live",
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }).eq("strategy_id", "A_M2_funding_rate").execute()
@@ -1600,7 +1600,7 @@ class FundingPromotionGates:
 
     async def _get_paper_positions(self) -> list:
         try:
-            result = await self._db.table("funding_positions").select("*").eq(
+            result = self._db.table("funding_positions").select("*").eq(
                 "is_paper", True
             ).eq("strategy_id", "A_M2_funding_rate").execute()
             return result.data or []
@@ -1609,7 +1609,7 @@ class FundingPromotionGates:
 
     async def _get_paper_payments(self) -> list:
         try:
-            result = await self._db.table("funding_payments").select("id, position_id").eq(
+            result = self._db.table("funding_payments").select("id, position_id").eq(
                 "is_paper", True
             ).execute()
             return result.data or []
