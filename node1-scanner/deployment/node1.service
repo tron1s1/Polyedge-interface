@@ -1,0 +1,25 @@
+[Unit]
+Description=AlphaNode — Node 1 Scanner (Singapore)
+After=network.target redis.service
+Wants=redis.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/algo-trading-strategist/node1-scanner
+ExecStart=/home/ubuntu/algo-trading-strategist/node1-scanner/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alphanode-node1
+
+# Environment (all secrets via .env file)
+EnvironmentFile=/home/ubuntu/algo-trading-strategist/node1-scanner/.env
+
+# Limit resource usage
+LimitNOFILE=65536
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

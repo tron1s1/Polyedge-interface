@@ -1,0 +1,84 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+
+  --color-background: #ffffff;
+  --color-foreground: #000000;
+  --color-card: #ffffff;
+  --color-card-foreground: #000000;
+  --color-primary: #000000;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f5f5f5;
+  --color-secondary-foreground: #000000;
+  --color-muted: #f5f5f5;
+  --color-muted-foreground: #666666;
+  --color-accent: #FF002B;
+  --color-accent-foreground: #ffffff;
+  --color-border: rgba(0, 0, 0, 0.1);
+  --color-input-bg: #f5f5f5;
+  --color-ring: rgba(255, 0, 43, 0.3);
+
+  --color-success: #1D9E75;
+  --color-warning: #EF9F27;
+  --color-danger: #E24B4A;
+  --color-info: #185FA5;
+
+  --color-chart-1: #E8530A;
+  --color-chart-2: #0F8B6E;
+  --color-chart-3: #2A4858;
+  --color-chart-4: #C7A620;
+  --color-chart-5: #B84A1C;
+
+  --color-strategy-latency: #E24B4A;
+  --color-strategy-negrisk: #1D9E75;
+  --color-strategy-ainews: #185FA5;
+  --color-strategy-mm: #EF9F27;
+}
+
+html {
+  font-family: var(--font-sans);
+  background: var(--color-background);
+  color: var(--color-foreground);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+.dark {
+  --color-background: #0a0a0a;
+  --color-foreground: #f5f5f5;
+  --color-card: #111111;
+  --color-card-foreground: #f5f5f5;
+  --color-primary: #f5f5f5;
+  --color-primary-foreground: #0a0a0a;
+  --color-secondary: #1a1a1a;
+  --color-secondary-foreground: #f5f5f5;
+  --color-muted: #1a1a1a;
+  --color-muted-foreground: #999999;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-input-bg: #1a1a1a;
+}
+
+/* Force zero border-radius globally */
+*, *::before, *::after {
+  border-radius: 0 !important;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); }
+
+/* Monospace utility for numbers */
+.mono { font-family: var(--font-mono); }
+
+/* Transition utility */
+.transition-colors { transition: color 0.15s, background-color 0.15s, border-color 0.15s; }

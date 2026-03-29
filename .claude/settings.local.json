@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm create:*)",
+      "Bash(npm install:*)",
+      "Bash(npx vite:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(where npx:*)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -m py_compile ingestion/market_normalizer.py)",
+      "Bash(python -m py_compile ingestion/base_adapter.py)",
+      "Bash(python -m py_compile core/event_bus.py)",
+      "Bash(python -m py_compile enrichment/event_calendar.py)",
+      "Bash(python -m py_compile enrichment/espn_calendar.py)",
+      "Bash(python -m py_compile enrichment/fed_calendar.py)",
+      "Bash(python -m py_compile enrichment/election_calendar.py)",
+      "Bash(python -m py_compile enrichment/semantic_matcher.py)",
+      "Bash(python -m py_compile ingestion/polymarket_adapter.py)",
+      "Bash(python -m py_compile ingestion/kalshi_adapter.py)",
+      "Bash(python -m py_compile ingestion/metaculus_adapter.py)",
+      "Bash(python -m py_compile ingestion/manifold_adapter.py)",
+      "Bash(python -m py_compile ingestion/ingestion_manager.py)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''main.py'', doraise=True\\); print\\(''main.py OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''core/__init__.py'', doraise=True\\); print\\(''core/__init__.py OK''\\)\")",
+      "Bash(find \"F:/Polyedge/Polyedge interface/src/data\" -name \"*.js\" -exec wc -l {} +)",
+      "Bash(for dir:*)",
+      "Bash(do touch:*)",
+      "Bash(done)",
+      "Bash(ls -la */__init__.py)",
+      "Bash(pip install:*)",
+      "Bash(python -m nltk.downloader punkt punkt_tab)",
+      "Bash(python -c \"import nltk; nltk.download\\(''''punkt''''\\); nltk.download\\(''''punkt_tab''''\\)\")",
+      "Bash(pip show:*)",
+      "Bash(C:/Users/aryan/anaconda3/python.exe -c \"import nltk; nltk.download\\(''punkt''\\); nltk.download\\(''punkt_tab''\\)\")",
+      "Bash(C:/Users/aryan/anaconda3/python.exe -m pytest tests/test_part1_foundation.py -v)",
+      "Bash(C:/Users/aryan/anaconda3/python.exe -m pytest tests/test_part2_ingestion.py -v)"
+    ]
+  }
+}
