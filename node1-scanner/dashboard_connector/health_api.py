@@ -30,6 +30,16 @@ db = SupabaseClient()
 cache = TieredCache(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 
+@app.on_event("startup")
+async def _connect_cache():
+    """Connect the TieredCache to Redis so L2 reads/writes actually work."""
+    try:
+        await cache.connect()
+        logger.info("health_api_cache_connected")
+    except Exception as e:
+        logger.warning("health_api_cache_connect_failed", error=str(e))
+
+
 @app.get("/health")
 async def health():
     """Liveness check. Dashboard polls this every 30 seconds."""
@@ -161,6 +171,70 @@ def _validate_triangle_config(config: dict) -> None:
             raise HTTPException(400, "active_triangles must be a list")
         if len(config["active_triangles"]) == 0:
             raise HTTPException(400, "At least one triangle must be active")
+
+
+@app.get("/api/strategies")
+async def list_all_strategies():
+    """
+    Return list of all registered strategies from strategy_plugins table.
+    Used by dashboard to display strategy list on main page.
+    Includes all necessary fields for dashboard rendering.
+    """
+    supa = _get_supabase()
+    node_id = os.getenv("NODE_ID", "singapore-01")
+
+    try:
+        result = supa.table("strategy_plugins").select("*").execute()
+
+        # Aggregate trade stats via a single SQL GROUP BY — one round-trip, no full scan
+        live_stats: dict = {}
+        try:
+            agg = supa._client.rpc("get_strategy_trade_stats", {}).execute()
+            for row in (agg.data or []):
+                sid = row.get("strategy_id")
+                if sid:
+                    live_stats[sid] = row
+        except Exception:
+            pass  # RPC not available yet — fall back to strategy_plugins static values
+
+        strategies = []
+        if result.data:
+            for strat in result.data:
+                sid = strat.get("strategy_id")
+                stats = live_stats.get(sid, {})
+                total = stats.get("total", 0)
+                wins  = stats.get("wins", 0)
+                strategies.append({
+                    "strategy_id":        sid,
+                    "display_name":       strat.get("display_name"),
+                    "category":           strat.get("category"),
+                    "category_label":     strat.get("category_label"),
+                    "mode":               strat.get("mode", "paper"),
+                    "enabled":            strat.get("enabled", False),
+                    "node_id":            node_id,
+                    # Live-computed from strategy_executions — always accurate
+                    "win_rate":           round(wins / total, 4) if total > 0 else strat.get("win_rate"),
+                    "total_pnl_usdc":     round(stats.get("total_pnl_usdc", strat.get("total_pnl_usdc") or 0.0), 4),
+                    "paper_trades_count": stats.get("paper_trades_count", strat.get("paper_trades_count", 0)),
+                    "live_trades_count":  stats.get("live_trades_count", strat.get("live_trades_count", 0)),
+                    "description":        strat.get("description"),
+                    "file_name":          strat.get("file_name"),
+                    "version_tag":        strat.get("version_tag"),
+                    "notes":              strat.get("notes"),
+                    "kelly_multiplier":   strat.get("kelly_multiplier", 1.0),
+                    "max_capital_pct":    strat.get("max_capital_pct", 0.05),
+                    "config":             strat.get("config") or {},
+                })
+
+        return {
+            "strategies": strategies,
+            "count": len(strategies),
+            "node_id": node_id,
+        }
+
+    except Exception as e:
+        logger.error("list_strategies_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to list strategies: {str(e)}")
 
 
 @app.get("/api/strategies/{strategy_id}/config")
@@ -530,3 +604,565 @@ async def get_cex_promotion_gates():
     supa  = _get_supabase()
     gates = CEXPromotionGates(supa)
     return await gates.check_all_gates()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A_M1 TRIANGULAR ARBITRAGE — SPECIFIC ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/strategies/A_M1_triangular_arb/graph-stats")
+async def get_triangle_graph_stats():
+    """Return graph statistics: pair count, triangle count, currency count."""
+    try:
+        import asyncio
+
+        # In a production setup, access the running strategy instance
+        # For MVP, return from Supabase cache
+        supa = _get_supabase()
+
+        graph_stats = {}
+        try:
+            graph_stats = await asyncio.wait_for(cache.get("a_m1:graph:stats"), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+        if not graph_stats:
+            graph_stats = {
+                "total_pairs": 0,
+                "currencies": 0,
+                "triangles": 0,
+                "graph_builds": 0,
+            }
+
+        return {
+            "graph": graph_stats,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.warning("graph_stats_error", error=str(e))
+        return {"graph": {}, "error": str(e)}
+
+
+@app.get("/api/strategies/A_M1_triangular_arb/top-opportunities")
+async def get_top_triangles(limit: int = 20):
+    """Return top N currently profitable triangles."""
+    try:
+        import asyncio
+
+        opportunities = []
+        try:
+            opportunities = await asyncio.wait_for(cache.get("a_m1:opportunities:top"), timeout=2.0)
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+        if not opportunities:
+            opportunities = []
+
+        return {
+            "count": len(opportunities),
+            "opportunities": opportunities[:limit],
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.warning("top_triangles_error", error=str(e))
+        return {"opportunities": [], "error": str(e)}
+
+
+@app.get("/api/strategies/A_M1_triangular_arb/performance-by-start")
+async def get_performance_by_start_currency():
+    """Performance breakdown by start currency (USDT/BTC/ETH/BNB)."""
+    supa = _get_supabase()
+
+    try:
+        result = supa.table("strategy_executions").select(
+            "triangle_id, net_profit_usdc, net_profit_pct, created_at"
+        ).eq("strategy_id", "A_M1_triangular_arb").execute()
+
+        trades = result.data or []
+        by_currency: dict = {}
+
+        for t in trades:
+            tri_id = t.get("triangle_id", "")
+            start_curr = tri_id.split("_")[0] if "_" in tri_id else "USDT"
+
+            if start_curr not in by_currency:
+                by_currency[start_curr] = {
+                    "trades": 0,
+                    "wins": 0,
+                    "total_pnl_usdc": 0.0,
+                    "avg_profit_pct": 0.0,
+                }
+
+            by_currency[start_curr]["trades"] += 1
+            if float(t.get("net_profit_usdc") or 0) > 0:
+                by_currency[start_curr]["wins"] += 1
+            by_currency[start_curr]["total_pnl_usdc"] += float(t.get("net_profit_usdc") or 0)
+
+        # Calculate averages
+        for curr, stats in by_currency.items():
+            if stats["trades"] > 0:
+                stats["win_rate"] = round(stats["wins"] / stats["trades"], 4)
+                stats["avg_profit_pct"] = round(
+                    sum(float(t.get("net_profit_pct") or 0) for t in trades
+                        if t.get("triangle_id", "").startswith(curr + "_")) / stats["trades"],
+                    4
+                )
+
+        return {"by_currency": by_currency}
+
+    except Exception as e:
+        logger.warning("performance_by_start_error", error=str(e))
+        return {"by_currency": {}}
+
+
+@app.get("/api/strategies/A_M1_triangular_arb/promotion-gates")
+async def get_a_m1_promotion_gates():
+    """Check all 6 promotion gates for A_M1 — must all pass before going live."""
+    supa = _get_supabase()
+
+    try:
+        from strategies.A_M1_triangular_arb import TrianglePromotionGates
+        gates = TrianglePromotionGates(supa)
+        return await gates.check_all_gates()
+    except Exception as e:
+        logger.warning("a_m1_gates_error", error=str(e))
+        return {
+            "all_passed": False,
+            "strategy_id": "A_M1_triangular_arb",
+            "error": str(e),
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE-TEST CONTROL — arm/disarm + master trading toggle
+# Cross-process: API writes to cache, scanner's LiveTestState reload_loop picks
+# up changes within ~2s. Keys match LiveTestState._key() format exactly.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _LiveTestArmBody(BaseModel):
+    count: int
+    size_usdc: Optional[float] = None
+    cooldown_s: Optional[float] = None
+
+
+class _TradingToggleBody(BaseModel):
+    master_enabled: Optional[bool] = None
+    dry_run_enabled: Optional[bool] = None
+    size_usdc: Optional[float] = None
+    cooldown_s: Optional[float] = None
+
+
+async def _get_live_test_state(strategy_id: str):
+    """Instantiate a LiveTestState against the shared cache and load current
+    persisted state. Cheap — it's just a cache GET. Validated strategy_ids only."""
+    from execution.live_test_state import LiveTestState
+    # Whitelist — only strategies that support live execution
+    allowed = {"A_M1_triangular_arb"}
+    if strategy_id not in allowed:
+        raise HTTPException(400, f"live-test not supported for {strategy_id}")
+    state = LiveTestState(cache, strategy_id)
+    await state.load()
+    return state
+
+
+@app.get("/api/strategies/{strategy_id}/live-test/status")
+async def get_live_test_status(strategy_id: str):
+    """Return current arm/disarm + master toggle + last-fire result."""
+    try:
+        state = await _get_live_test_state(strategy_id)
+        return {
+            "strategy_id": strategy_id,
+            **state.status(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("live_test_status_error", error=str(e))
+        raise HTTPException(500, f"live-test status failed: {e}")
+
+
+@app.post("/api/strategies/{strategy_id}/live-test/arm")
+async def arm_live_test(strategy_id: str, body: _LiveTestArmBody):
+    """Queue N live-test fires. Decrements on each fire.
+
+    Body: {count, size_usdc?, cooldown_s?}
+
+    Safety: size is capped at $100 per fire; count at 50 per request.
+    """
+    if body.count <= 0 or body.count > 50:
+        raise HTTPException(400, "count must be 1–50")
+    if body.size_usdc is not None and (body.size_usdc <= 0 or body.size_usdc > 100):
+        raise HTTPException(400, "size_usdc must be 0–100 for live-test")
+
+    state = await _get_live_test_state(strategy_id)
+    if body.size_usdc is not None:
+        await state.set_test_size(body.size_usdc)
+    if body.cooldown_s is not None:
+        await state.set_cooldown(body.cooldown_s)
+    status = await state.arm(body.count)
+    return {"strategy_id": strategy_id, **status}
+
+
+@app.post("/api/strategies/{strategy_id}/live-test/disarm")
+async def disarm_live_test(strategy_id: str):
+    """Reset armed_count to 0 — scanner reverts to paper on next opportunity."""
+    state = await _get_live_test_state(strategy_id)
+    status = await state.disarm()
+    return {"strategy_id": strategy_id, **status}
+
+
+@app.post("/api/strategies/{strategy_id}/trading/toggle")
+async def toggle_trading(strategy_id: str, body: _TradingToggleBody):
+    """Flip master trading, dry-run mode, size, or cooldown.
+
+    Body: {master_enabled?, dry_run_enabled?, size_usdc?, cooldown_s?}
+
+    Master = False → nothing fires live/dry-run even if armed.
+    dry_run = True → fires go to Binance as rejected orders (latency-only).
+    """
+    state = await _get_live_test_state(strategy_id)
+    if body.master_enabled is not None:
+        await state.set_master(bool(body.master_enabled))
+    if body.dry_run_enabled is not None:
+        await state.set_dry_run(bool(body.dry_run_enabled))
+    if body.size_usdc is not None:
+        if body.size_usdc <= 0 or body.size_usdc > 100:
+            raise HTTPException(400, "size_usdc must be 0–100 for live-test")
+        await state.set_test_size(body.size_usdc)
+    if body.cooldown_s is not None:
+        await state.set_cooldown(body.cooldown_s)
+    return {"strategy_id": strategy_id, **state.status()}
+
+
+@app.get("/api/strategies/A_M1_triangular_arb/live-triangles")
+async def get_live_triangles(limit: int = 50):
+    """
+    Return triangles currently being evaluated by the A_M1 scanner.
+    Shows which triangle pairs are being checked in real-time, their profits,
+    and evaluation status.
+    """
+    try:
+        import asyncio
+
+        # Get data from cache with timeout protection
+        graph_stats = {}
+        opportunities = []
+        live_triangles = []
+
+        try:
+            graph_stats = await asyncio.wait_for(cache.get("a_m1:graph:stats"), timeout=2.0) or {}
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+        try:
+            opportunities = await asyncio.wait_for(cache.get("a_m1:opportunities:top"), timeout=2.0) or []
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+        try:
+            live_triangles = await asyncio.wait_for(cache.get("a_m1:triangles:live"), timeout=2.0) or []
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
+
+        # If no graph stats yet, strategy hasn't fully initialized
+        has_graph = bool(graph_stats and graph_stats.get("total_pairs", 0) > 0)
+
+        # Read best profit from L1 cache (written by scanner heartbeat)
+        best_profit_data = {}
+        try:
+            import time as _time
+            entry = cache._L1.get("a_m1:best_profit")
+            if entry and _time.monotonic() < entry[1]:
+                best_profit_data = entry[0]
+        except Exception:
+            pass
+
+        # Merge best profit into graph_stats for frontend
+        merged_stats = {**(graph_stats or {}), **best_profit_data}
+
+        return {
+            "strategy_id": "A_M1_triangular_arb",
+            "status": "running" if has_graph else "initializing",
+            "evaluated_count": len(live_triangles),
+            "graph_stats": merged_stats,
+            "triangles_evaluated": live_triangles[:limit],
+            "top_opportunities": opportunities[:limit],
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.warning("live_triangles_error", error=str(e))
+        return {
+            "status": "error",
+            "evaluated_count": 0,
+            "triangles_evaluated": [],
+            "top_opportunities": [],
+            "graph_stats": {},
+            "error": str(e),
+        }
+
+
+# ─────────────────────────────────────────────────────────────
+# GLOBAL DASHBOARD ENDPOINTS
+# /api/stats, /api/trades, /api/open, /api/scanner, /api/strategies/{id}/detail
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+async def get_stats():
+    """System-wide stats for dashboard header: capital, PnL, trade counts."""
+    supa = db._client
+    try:
+        # Capital pool
+        pool = supa.table("capital_pools").select(
+            "current_balance, pool_id"
+        ).eq("pool_id", "crypto_sg").single().execute()
+        capital = float((pool.data or {}).get("current_balance") or 0.0)
+    except Exception:
+        capital = 0.0
+
+    try:
+        # Aggregate PnL + trade counts from strategy_plugins
+        plugins = supa.table("strategy_plugins").select(
+            "total_pnl_usdc, paper_trades_count, live_trades_count, win_rate"
+        ).execute()
+        rows = plugins.data or []
+        total_pnl   = sum(float(r.get("total_pnl_usdc") or 0) for r in rows)
+        paper_total = sum(int(r.get("paper_trades_count") or 0) for r in rows)
+        live_total  = sum(int(r.get("live_trades_count") or 0) for r in rows)
+        win_rates   = [float(r["win_rate"]) for r in rows if r.get("win_rate")]
+        avg_wr      = round(sum(win_rates) / len(win_rates), 4) if win_rates else None
+    except Exception:
+        total_pnl = paper_total = live_total = 0
+        avg_wr = None
+
+    return {
+        "capital_usdc":       round(capital, 2),
+        "total_pnl_usdc":     round(total_pnl, 4),
+        "paper_trades_total": paper_total,
+        "live_trades_total":  live_total,
+        "avg_win_rate":       avg_wr,
+        "node_id":            os.getenv("NODE_ID", "singapore-01"),
+        "timestamp":          datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/trades")
+async def get_recent_trades(limit: int = 20):
+    """Recent trade executions across all strategies, newest first."""
+    supa = db._client
+    try:
+        result = supa.table("strategy_executions").select(
+            "id, strategy_id, triangle_id, is_paper, net_profit_pct, "
+            "net_profit_usdc, execution_ms, status, error, created_at"
+        ).order("created_at", desc=True).limit(limit).execute()
+        return {"trades": result.data or [], "count": len(result.data or [])}
+    except Exception as e:
+        logger.warning("get_trades_error", error=str(e))
+        return {"trades": [], "count": 0, "error": str(e)}
+
+
+@app.get("/api/open")
+async def get_open_positions():
+    """All currently open positions (funding + any live positions)."""
+    supa = db._client
+    positions = []
+
+    # Funding rate positions (A_M2)
+    try:
+        result = supa.table("funding_positions").select("*").eq(
+            "status", "holding"
+        ).execute()
+        for row in (result.data or []):
+            row["strategy_id"] = "A_M2_funding_rate"
+            positions.append(row)
+    except Exception:
+        pass
+
+    # Any live strategy_executions still open (no close timestamp)
+    try:
+        result = supa.table("strategy_executions").select(
+            "id, strategy_id, triangle_id, net_profit_usdc, created_at"
+        ).eq("status", "open").order("created_at", desc=True).limit(50).execute()
+        positions.extend(result.data or [])
+    except Exception:
+        pass
+
+    return {"positions": positions, "count": len(positions)}
+
+
+@app.get("/api/scanner")
+async def get_scanner_status():
+    """Scanner heartbeat and latest cycle stats."""
+    supa = db._client
+    try:
+        # Latest scanner cycle
+        result = supa.table("scanner_cycles").select(
+            "node_id, cycle_at, markets_scored, duration_ms, regime, allocation"
+        ).order("cycle_at", desc=True).limit(1).execute()
+        latest = (result.data or [None])[0]
+    except Exception:
+        latest = None
+
+    try:
+        # Node online status
+        node = supa.table("node_status").select(
+            "node_id, last_seen, status"
+        ).eq("node_id", os.getenv("NODE_ID", "singapore-01")).single().execute()
+        node_data = node.data or {}
+    except Exception:
+        node_data = {}
+
+    return {
+        "node_id":        os.getenv("NODE_ID", "singapore-01"),
+        "status":         node_data.get("status", "unknown"),
+        "last_seen":      node_data.get("last_seen"),
+        "latest_cycle":   latest,
+        "timestamp":      datetime.utcnow().isoformat(),
+    }
+
+
+def _map_execution_to_trade(row: dict) -> dict:
+    """
+    Map a strategy_executions row to the trade shape the frontend expects.
+    Frontend fields: symbol, direction, size_usdc, outcome, edge_detected,
+                     is_paper, created_at, ai_reasoning, entry_price
+    """
+    tri_id   = row.get("triangle_id", "")
+    pnl_pct  = float(row.get("net_profit_pct") or 0)
+    pnl_usdc = float(row.get("net_profit_usdc") or 0)
+    status   = row.get("status", "success")
+
+    # Approximate trade size from pnl (net_profit_usdc = size * net_profit_pct/100)
+    size_usdc = round(pnl_usdc / (pnl_pct / 100), 2) if pnl_pct else 0.0
+
+    outcome = "won" if pnl_usdc > 0 else ("lost" if status == "failed" else "pending")
+
+    return {
+        "symbol":       tri_id.replace("_", "→").rstrip("→0").rstrip("→"),
+        "direction":    "ARB",
+        "size_usdc":    size_usdc,
+        "outcome":      outcome,
+        "edge_detected": round(pnl_pct, 4),
+        "is_paper":     row.get("is_paper", True),
+        "created_at":   row.get("created_at"),
+        "entry_price":  None,
+        "ai_reasoning": f"Triangle arb: {tri_id} | net {pnl_pct:+.4f}% | ${pnl_usdc:+.4f}",
+        # Raw fields for completeness
+        "net_profit_pct":  pnl_pct,
+        "net_profit_usdc": pnl_usdc,
+        "execution_ms":    row.get("execution_ms"),
+        "triangle_id":     tri_id,
+    }
+
+
+@app.get("/api/strategies/{strategy_id}/trades")
+async def get_strategy_trades(strategy_id: str, limit: int = 50):
+    """Trade history for one strategy — used by strategy detail trades tab."""
+    supa = _get_supabase()
+    try:
+        result = supa.table("strategy_executions").select(
+            "triangle_id, is_paper, net_profit_pct, net_profit_usdc, "
+            "execution_ms, status, error, created_at"
+        ).eq("strategy_id", strategy_id).order(
+            "created_at", desc=True
+        ).limit(limit).execute()
+        trades = [_map_execution_to_trade(r) for r in (result.data or [])]
+        return {"trades": trades, "count": len(trades)}
+    except Exception as e:
+        logger.warning("get_strategy_trades_error", error=str(e))
+        return {"trades": [], "count": 0, "error": str(e)}
+
+
+@app.get("/api/strategies/{strategy_id}/detail")
+async def get_strategy_detail(strategy_id: str):
+    """
+    Full detail for one strategy.
+    Returns { strategy, trades, stats, versions } — shape expected by StrategyDetailPage.
+    """
+    supa = _get_supabase()
+
+    # Load plugin row
+    try:
+        plugin = supa.table("strategy_plugins").select("*").eq(
+            "strategy_id", strategy_id
+        ).single().execute()
+        if not plugin.data:
+            raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Load all executions for this strategy (for trades list + live stats)
+    try:
+        exec_result = supa.table("strategy_executions").select(
+            "triangle_id, is_paper, net_profit_pct, net_profit_usdc, "
+            "execution_ms, status, error, created_at"
+        ).eq("strategy_id", strategy_id).order(
+            "created_at", desc=True
+        ).limit(50).execute()
+        exec_rows = exec_result.data or []
+    except Exception:
+        exec_rows = []
+
+    # Compute live stats from executions (not from stale strategy_plugins counters)
+    paper_count = sum(1 for r in exec_rows if r.get("is_paper"))
+    live_count  = sum(1 for r in exec_rows if not r.get("is_paper"))
+    total       = len(exec_rows)
+    wins        = sum(1 for r in exec_rows if float(r.get("net_profit_usdc") or 0) > 0)
+    total_pnl   = sum(float(r.get("net_profit_usdc") or 0) for r in exec_rows)
+    win_rate    = round((wins / total) * 100, 1) if total > 0 else 0.0
+
+    trades = [_map_execution_to_trade(r) for r in exec_rows]
+
+    # Version snapshots
+    try:
+        ver_result = supa.table("latency_versions").select(
+            "version_tag, created_at, win_rate_at_save, pnl_at_save"
+        ).eq("strategy_id", strategy_id).order(
+            "created_at", desc=True
+        ).limit(10).execute()
+        versions = ver_result.data or []
+    except Exception:
+        versions = []
+
+    data = plugin.data
+    return {
+        "strategy": {
+            "strategy_id":      data.get("strategy_id"),
+            "display_name":     data.get("display_name"),
+            "category":         data.get("category"),
+            "category_label":   data.get("category_label"),
+            "mode":             data.get("mode", "paper"),
+            "enabled":          data.get("enabled", False),
+            "kelly_multiplier": data.get("kelly_multiplier", 1.0),
+            "max_capital_pct":  data.get("max_capital_pct", 0.05),
+            "config":           data.get("config") or {},
+            "notes":            data.get("notes"),
+            "version_tag":      data.get("version_tag"),
+            "description":      data.get("description"),
+            "file_name":        data.get("file_name"),
+        },
+        "trades": trades,
+        "stats": {
+            "win_rate":           win_rate,       # percentage e.g. 100.0
+            "total_trades":       total,
+            "paper_trades":       paper_count,
+            "live_trades":        live_count,
+            "wins":               wins,
+            "losses":             total - wins,
+            "total_pnl_usdc":     round(total_pnl, 4),
+            "open_collected_usdc": 0.0,           # triangular arb has no open positions
+        },
+        "versions": versions,
+        "timestamp": datetime.utcnow().isoformat(),
+    }

@@ -3,7 +3,7 @@
  * All dashboard data flows through here.
  */
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_URL || ''
 
 async function fetchAPI(path) {
   try {
@@ -35,6 +35,9 @@ export const api = {
 
   getStrategyDetail: (strategyId) => fetchAPI(`/api/strategies/${strategyId}/detail`),
   getStrategyTrades: (strategyId, limit = 50) => fetchAPI(`/api/strategies/${strategyId}/trades?limit=${limit}`),
+  getTriangleScannerData: (limit = 50) => fetchAPI(`/api/strategies/A_M1_triangular_arb/live-triangles?limit=${limit}`),
+  getExecutionReality: (strategyId, limit = 500) => fetchAPI(`/api/strategies/${strategyId}/execution-reality?limit=${limit}`),
+  getPromotionGates: (strategyId) => fetchAPI(`/api/strategies/${strategyId}/promotion-gates`),
 
   resetAndAllocate: (strategyId, mode = 'paper') =>
     fetch(`${API_BASE}/api/strategies/${strategyId}/reset-allocate`, {
@@ -91,4 +94,42 @@ export const api = {
   releaseKillSwitch: () =>
     fetch(`${API_BASE}/api/kill-switch/release`, { method: 'POST' })
       .then(r => r.json()).catch(() => null),
+
+  // ── Live-test controls (arm/disarm + master toggle) ──────────────────────
+  getLiveTestStatus: (strategyId) =>
+    fetchAPI(`/api/strategies/${strategyId}/live-test/status`),
+
+  armLiveTest: (strategyId, count, sizeUsdc = null, cooldownS = null) => {
+    const body = { count }
+    if (sizeUsdc !== null && sizeUsdc !== undefined) body.size_usdc = sizeUsdc
+    if (cooldownS !== null && cooldownS !== undefined) body.cooldown_s = cooldownS
+    return fetch(`${API_BASE}/api/strategies/${strategyId}/live-test/arm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(async r => {
+      const data = await r.json()
+      if (!r.ok) return { error: true, detail: data?.detail || `HTTP ${r.status}` }
+      return data
+    }).catch(e => ({ error: true, detail: e.message }))
+  },
+
+  disarmLiveTest: (strategyId) =>
+    fetch(`${API_BASE}/api/strategies/${strategyId}/live-test/disarm`, { method: 'POST' })
+      .then(async r => {
+        const data = await r.json()
+        if (!r.ok) return { error: true, detail: data?.detail || `HTTP ${r.status}` }
+        return data
+      }).catch(e => ({ error: true, detail: e.message })),
+
+  toggleTrading: (strategyId, fields) =>
+    fetch(`${API_BASE}/api/strategies/${strategyId}/trading/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    }).then(async r => {
+      const data = await r.json()
+      if (!r.ok) return { error: true, detail: data?.detail || `HTTP ${r.status}` }
+      return data
+    }).catch(e => ({ error: true, detail: e.message })),
 }

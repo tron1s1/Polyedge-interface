@@ -45,11 +45,16 @@ class StrategyRouter:
         self._enabled_strategies: set = set()
 
     async def refresh_enabled_strategies(self) -> None:
-        """Load which strategies are enabled from Supabase flags."""
+        """Load which strategies are enabled from Supabase flags (non-blocking)."""
         try:
-            result = self._db.table("strategy_flags").select(
-                "strategy_id, enabled, mode"
-            ).execute()
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: self._db.table("strategy_flags").select(
+                    "strategy_id, enabled, mode"
+                ).execute()
+            )
 
             self._enabled_strategies = {
                 row["strategy_id"]

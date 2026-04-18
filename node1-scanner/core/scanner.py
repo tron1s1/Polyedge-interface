@@ -66,6 +66,7 @@ class UniversalScanner:
 
         self._last_full_scan = 0.0
         self._scan_count = 0
+        self._latest_cycle_row: dict = {}  # Buffered — flushed to DB every 60s
 
     async def startup(self) -> None:
         """Initialize all connections. Called once before run_forever()."""
@@ -84,35 +85,64 @@ class UniversalScanner:
         for strat in self.registry.get_all().values():
             if hasattr(strat, "startup"):
                 try:
-                    await strat.startup()
+                    strategy_id = getattr(strat, "STRATEGY_ID", "?")
+                    await asyncio.wait_for(strat.startup(), timeout=15.0)
+                    logger.info("strategy_startup_complete", strategy=strategy_id)
+                except asyncio.TimeoutError:
+                    logger.warning("strategy_startup_timeout", strategy=getattr(strat, "STRATEGY_ID", "?"))
                 except Exception as e:
                     logger.warning("strategy_startup_error", strategy=getattr(strat, "STRATEGY_ID", "?"), error=str(e))
 
-        # Refresh strategy flags
-        await self.router.refresh_enabled_strategies()
+        # Refresh strategy flags (non-blocking with 8s timeout)
+        try:
+            await asyncio.wait_for(self.router.refresh_enabled_strategies(), timeout=8.0)
+        except asyncio.TimeoutError:
+            logger.warning("strategy_flag_refresh_timeout")
+        except Exception as e:
+            logger.warning("strategy_flag_refresh_error", error=str(e))
 
         # Initial capital setup — load from DB so kill switch + allocator work correctly
-        current = await self.cache.get("capital:current_usdc")
+        current = None
+        try:
+            current = await asyncio.wait_for(self.cache.get("capital:current_usdc"), timeout=3.0)
+        except Exception as e:
+            logger.warning("capital_cache_load_failed", error=str(e))
+
         if not current:
+            capital = 0.0
             try:
-                pool = self.db.table("capital_pools").select("current_balance") \
-                    .eq("pool_id", "crypto_sg").single().execute()
+                loop = asyncio.get_event_loop()
+                pool = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: self.db.table("capital_pools").select("current_balance")
+                        .eq("pool_id", "crypto_sg").single().execute()),
+                    timeout=8.0,
+                )
                 capital = float((pool.data or {}).get("current_balance") or 0.0)
             except Exception:
-                capital = 0.0
+                pass
             # Also sum paper capital from strategy_flags as fallback
             if capital <= 0:
                 try:
-                    flags = self.db.table("strategy_flags").select("max_capital").execute()
+                    loop = asyncio.get_event_loop()
+                    flags = await asyncio.wait_for(
+                        loop.run_in_executor(None, lambda: self.db.table("strategy_flags").select("max_capital").execute()),
+                        timeout=8.0,
+                    )
                     capital = sum(float(r.get("max_capital") or 0) for r in (flags.data or []))
                 except Exception:
-                    capital = 2000.0  # safe default for paper trading
-            await self.cache.set("capital:current_usdc", capital)
-            await self.cache.set("capital:peak_usdc", capital)
+                    pass
+            if capital <= 0:
+                capital = 2000.0  # safe default for paper trading
+
+            try:
+                await asyncio.wait_for(self.cache.set("capital:current_usdc", capital), timeout=3.0)
+                await asyncio.wait_for(self.cache.set("capital:peak_usdc", capital), timeout=3.0)
+            except Exception as e:
+                logger.warning("capital_cache_store_failed", error=str(e))
             logger.info("capital_initialized", usdc=capital)
 
-        # Update node status to online
-        await self.db.heartbeat(self._node_id)
+        # Update node status to online (fire-and-forget, non-blocking)
+        asyncio.create_task(self.db.heartbeat(self._node_id))
         logger.info("scanner_startup_complete")
 
     async def run_forever(self) -> None:
@@ -133,6 +163,7 @@ class UniversalScanner:
             self._run_heartbeat_loop(),
             self._run_cache_cleanup_loop(),
             self._run_config_sync_loop(),
+            self._run_cycle_flush_loop(),
         ]
 
         # Add dedicated loops for strategies that manage their own scanning
@@ -217,7 +248,8 @@ class UniversalScanner:
 
         try:
             # 1. Ingest all markets from all exchanges (parallel, < 500ms)
-            markets = await self.ingester.get_all_markets()
+            # Hard cap: if any exchange hangs, don't freeze the scan cycle for >20s
+            markets = await asyncio.wait_for(self.ingester.get_all_markets(), timeout=20.0)
 
             # 2. Enrich with cached intelligence (< 1ms — reads from cache)
             markets = await self.enrichment.enrich_markets_with_cache(markets)
@@ -242,7 +274,9 @@ class UniversalScanner:
                 routes=routes,
             ))
 
-            if duration_ms > 1000:
+            if duration_ms > 15000:
+                # On VPS (2-6ms to Binance) this should stay under 2s.
+                # On local dev (REST over internet) 5-12s is normal — only alert above 15s.
                 logger.error("SCAN_PERFORMANCE_VIOLATION",
                              duration_ms=duration_ms,
                              markets=len(scored))
@@ -252,16 +286,17 @@ class UniversalScanner:
                              routed=len(routes),
                              duration_ms=round(duration_ms, 2))
 
+        except asyncio.TimeoutError:
+            logger.warning("scan_cycle_timeout", msg="Exchange fetch took >20s — skipping cycle")
         except Exception as e:
             logger.error("scan_cycle_error", error=str(e))
 
     async def _log_scan_cycle(self, markets_scored, duration_ms, top_opportunities, routes):
-        """Log scan cycle to Supabase for dashboard display."""
+        """Buffer the latest scan cycle — written to Supabase every 60s by _run_cycle_flush_loop."""
         try:
             regime_data = await self.cache.get("regime:current") or {}
             alloc = await self.cache.get("capital:allocation") or {}
-
-            self.db.table("scanner_cycles").insert({
+            self._latest_cycle_row = {
                 "node_id": self._node_id,
                 "cycle_at": datetime.utcnow().isoformat(),
                 "markets_scored": markets_scored,
@@ -270,9 +305,23 @@ class UniversalScanner:
                 "regime": regime_data.get("regime", "UNKNOWN"),
                 "allocation": alloc,
                 "slot": os.getenv("DEPLOY_SLOT", "green"),
-            }).execute()
+            }
         except Exception as e:
             logger.warning("scan_log_error", error=str(e))
+
+    async def _run_cycle_flush_loop(self) -> None:
+        """Write the latest buffered scan cycle to Supabase every 60s (1 write/min instead of ~20/min)."""
+        while True:
+            await asyncio.sleep(60)
+            if not self._latest_cycle_row:
+                continue
+            row = self._latest_cycle_row
+            def _write():
+                try:
+                    self.db.table("scanner_cycles").insert(row).execute()
+                except Exception:
+                    pass
+            asyncio.get_event_loop().run_in_executor(None, _write)
 
     # ── Task 5: Regime Loop ───────────────────────────────────────────────
 
@@ -329,9 +378,12 @@ class UniversalScanner:
         """
         while True:
             try:
-                rows = self.db.table("strategy_plugins") \
-                    .select("strategy_id, strategy_config") \
-                    .execute()
+                loop = asyncio.get_event_loop()
+                rows = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: self.db.table("strategy_plugins")
+                        .select("strategy_id, strategy_config").execute()),
+                    timeout=8.0,
+                )
                 for row in (rows.data or []):
                     sid = row.get("strategy_id")
                     cfg = row.get("strategy_config")

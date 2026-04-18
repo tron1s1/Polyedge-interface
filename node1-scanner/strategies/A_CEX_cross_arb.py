@@ -51,7 +51,7 @@ DEFAULT_CONFIG = {
     # Gap thresholds
     "min_gap_pct":          0.20,   # Minimum % gap to trigger a trade
     "target_gap_pct":       0.35,   # Prioritise gaps above this
-    "max_gap_pct":          15.0,   # Skip gaps > 15% (likely stale/bad data); altcoins routinely show 3–10% real gaps
+    "max_gap_pct":          2.0,    # Skip gaps > 2% — real CEX gaps never exceed 2% in normal conditions; >2% = stale data or illiquid coin
 
     # Fee model per exchange — update to your actual volume tier
     "fee_binance_pct":      0.10,   # 0.10% taker (standard)
@@ -309,8 +309,8 @@ class CrossExchangePriceMonitor:
     async def find_opportunities(self) -> List[ArbOpportunity]:
         """
         Scan ALL symbols in the Redis price cache across all active exchange pairs.
-        Uses Redis MGET to bulk-fetch all prices in a single round-trip per exchange,
-        reducing 11,000+ sequential reads down to one pipeline call.
+        Bulk-fetches prices, freshness timestamps, and 24h volumes in one pipeline,
+        then filters: stale prices (> 3s) and thin markets (< $100k/day volume).
         """
         symbols = await self._get_live_symbols()
         pairs = [p.split("-") for p in self._config.active_pairs if len(p.split("-")) == 2]
@@ -318,26 +318,47 @@ class CrossExchangePriceMonitor:
 
         logger.debug("cex_arb_scan", symbol_count=len(symbols), pairs=self._config.active_pairs)
 
-        # Bulk fetch all prices in one Redis pipeline call
+        # Bulk fetch prices, timestamps, and volumes in one Redis pipeline call
         price_map: Dict[str, Dict[str, float]] = {}  # {symbol: {exchange: price}}
+        ts_map:    Dict[str, Dict[str, float]] = {}  # {symbol: {exchange: monotonic_ts}}
+        vol_map:   Dict[str, Dict[str, float]] = {}  # {symbol: {exchange: volume_24h_usd}}
         if self._cache and self._cache._redis:
-            keys = [f"price:{ex}:{sym}" for ex in all_exchanges for sym in symbols]
+            import msgpack as _mp
+            n = len(all_exchanges) * len(symbols)
+            price_keys = [f"price:{ex}:{sym}"     for ex in all_exchanges for sym in symbols]
+            ts_keys    = [f"price_ts:{ex}:{sym}"  for ex in all_exchanges for sym in symbols]
+            vol_keys   = [f"volume24h:{ex}:{sym}" for ex in all_exchanges for sym in symbols]
             try:
-                values = await self._cache._redis.mget(*keys)
+                values     = await self._cache._redis.mget(*(price_keys + ts_keys + vol_keys))
+                price_vals = values[:n]
+                ts_vals    = values[n:2 * n]
+                vol_vals   = values[2 * n:]
                 idx = 0
                 for ex in all_exchanges:
                     for sym in symbols:
-                        v = values[idx]
+                        pv, tv, vv = price_vals[idx], ts_vals[idx], vol_vals[idx]
                         idx += 1
-                        if v is not None:
+                        if pv is not None:
                             try:
-                                # TieredCache stores values as msgpack bytes
-                                import msgpack as _mp
-                                price = float(_mp.unpackb(v, raw=False))
+                                price = float(_mp.unpackb(pv, raw=False))
                                 if price > 0:
                                     if sym not in price_map:
                                         price_map[sym] = {}
                                     price_map[sym][ex] = price
+                            except Exception:
+                                pass
+                        if tv is not None:
+                            try:
+                                if sym not in ts_map:
+                                    ts_map[sym] = {}
+                                ts_map[sym][ex] = float(_mp.unpackb(tv, raw=False))
+                            except Exception:
+                                pass
+                        if vv is not None:
+                            try:
+                                if sym not in vol_map:
+                                    vol_map[sym] = {}
+                                vol_map[sym][ex] = float(_mp.unpackb(vv, raw=False))
                             except Exception:
                                 pass
             except Exception:
@@ -345,11 +366,31 @@ class CrossExchangePriceMonitor:
 
         opportunities = []
         HALF_SPREAD = 0.0001
+        now_ts = time.monotonic()
         for sym, sym_prices in price_map.items():
+            sym_ts  = ts_map.get(sym, {})
+            sym_vol = vol_map.get(sym, {})
             for ex_a, ex_b in pairs:
                 price_a = sym_prices.get(ex_a)
                 price_b = sym_prices.get(ex_b)
                 if not price_a or not price_b:
+                    continue
+
+                # Filter 1: Price freshness — both prices must be < 3 seconds old.
+                # A stale price (e.g. WebSocket dropped 45s ago) causes phantom gaps.
+                ts_a = sym_ts.get(ex_a)
+                ts_b = sym_ts.get(ex_b)
+                if ts_a is not None and (now_ts - ts_a) > 3.0:
+                    continue
+                if ts_b is not None and (now_ts - ts_b) > 3.0:
+                    continue
+
+                # Filter 2: Minimum $100k 24h volume on BOTH exchanges.
+                # Thin books mean your order moves the price and creates the gap itself.
+                # Only enforce when volume data is available (skip filter on startup).
+                vol_a = sym_vol.get(ex_a, 0)
+                vol_b = sym_vol.get(ex_b, 0)
+                if vol_a > 0 and vol_b > 0 and min(vol_a, vol_b) < 100_000:
                     continue
 
                 ask_a = price_a * (1 + HALF_SPREAD)
@@ -444,8 +485,9 @@ class CrossExchangePriceMonitor:
             return None
         if gap_pct > self._config.max_gap_pct:
             logger.debug("gap_too_large_skipped",
-                         symbol=symbol, gap_pct=gap_pct,
-                         buy=buy_ex, sell=sell_ex)
+                         symbol=symbol, gap_pct=round(gap_pct, 4),
+                         buy=buy_ex, sell=sell_ex,
+                         reason="likely_stale_data_or_illiquid")
             return None
 
         fee_cost_pct = self._config.get_total_fee_pct(buy_ex, sell_ex)
@@ -799,6 +841,12 @@ class Strategy(BaseStrategy):
         self._live_executor   = LiveCEXExecutor()
         self._promotion_gates = CEXPromotionGates(db)
 
+        # Write buffer: trade rows are accumulated here and flushed to Supabase
+        # every 60s as a single batch insert (avoids 2400 writes/min at full speed).
+        self._trade_buffer: list = []
+        self._paper_trades_today: int = 0
+        self._paper_trades_date: str = ""  # YYYY-MM-DD, reset daily
+
         self._stats = {
             "total_signals":        0,
             "total_trades":         0,
@@ -847,7 +895,8 @@ class Strategy(BaseStrategy):
             self.logger.debug("opportunity_rejected_sync", reason=reason)
             return None
 
-        if self._float_tracker:
+        # Float checks only matter for live trading
+        if not self._is_paper and self._float_tracker:
             can_buy = await self._float_tracker.can_afford(
                 best.buy_exchange, best.trade_size_usdc
             )
@@ -962,7 +1011,7 @@ class Strategy(BaseStrategy):
                 logger.info("cex_opp_invalid_on_exec", reason=reason)
                 return None
 
-        if self._float_tracker:
+        if not self._is_paper and self._float_tracker:
             await self._float_tracker.reserve(opp.buy_exchange, opp.trade_size_usdc)
 
         if self._planner:
@@ -978,7 +1027,7 @@ class Strategy(BaseStrategy):
                     logger.error("no_live_executor_for_cex")
                     return None
 
-            if self._float_tracker:
+            if not self._is_paper and self._float_tracker:
                 if result.success:
                     await self._float_tracker.release(
                         opp.sell_exchange,
@@ -1028,42 +1077,46 @@ class Strategy(BaseStrategy):
         """
         Dedicated continuous scan loop — completely independent of scanner routing.
         Runs two concurrent sub-loops:
-          1. _price_refresh_loop  — keeps KuCoin/Coinbase prices fresh in Redis
+          1. _price_refresh_loop  — refreshes ALL 5 exchange prices every 4s (under 5s TTL)
           2. _trade_loop          — scans ALL symbols and executes every profitable gap
         """
         logger.info("cex_arb_own_loop_started")
         await asyncio.gather(
             self._price_refresh_loop(),
             self._trade_loop(),
+            self._flush_trades_loop(),
         )
 
     async def _price_refresh_loop(self) -> None:
         """
-        Independently refresh KuCoin (and Coinbase if available) prices every 15s.
-        Ensures CEX arb has fresh multi-exchange data even if the scanner's
-        ingestion cycle hasn't run yet or is slow.
+        Independently refresh ALL 5 exchange prices every 4 seconds.
+        Binance/Bybit prices have a 5s Redis TTL — refreshing at 4s keeps them
+        permanently alive regardless of whether the scanner's ingestion loop is running.
+        All 5 fetches run concurrently (asyncio.gather) so total time ≈ slowest exchange.
         """
-        while True:
+        from ingestion.binance_adapter import BinanceAdapter
+        from ingestion.bybit_adapter import BybitAdapter
+        from ingestion.kucoin_adapter import KuCoinAdapter
+        from ingestion.coinbase_adapter import CoinbaseAdapter
+        from ingestion.cryptocom_adapter import CryptocomAdapter
+
+        async def _fetch(name: str, adapter) -> None:
             try:
-                from ingestion.kucoin_adapter import KuCoinAdapter
-                kc = KuCoinAdapter(self._cache)
-                await kc.fetch_markets()
-                logger.debug("cex_arb_price_refresh_done", exchange="kucoin")
+                await adapter.fetch_markets()
+                logger.debug("cex_arb_price_refresh_done", exchange=name)
             except Exception as e:
-                logger.debug("cex_arb_price_refresh_error", error=str(e))
-            try:
-                from ingestion.coinbase_adapter import CoinbaseAdapter
-                cb = CoinbaseAdapter(self._cache)
-                await cb.fetch_markets()
-            except Exception:
-                pass
-            try:
-                from ingestion.cryptocom_adapter import CryptocomAdapter
-                cdc = CryptocomAdapter(self._cache)
-                await cdc.fetch_markets()
-            except Exception:
-                pass
-            await asyncio.sleep(15)  # Refresh every 15s (well within 5s price TTL with overlap)
+                logger.debug("cex_arb_price_refresh_error", exchange=name, error=str(e))
+
+        while True:
+            await asyncio.gather(
+                _fetch("binance",   BinanceAdapter(self._cache)),
+                _fetch("bybit",     BybitAdapter(self._cache)),
+                _fetch("kucoin",    KuCoinAdapter(self._cache)),
+                _fetch("coinbase",  CoinbaseAdapter(self._cache)),
+                _fetch("cryptocom", CryptocomAdapter(self._cache)),
+                return_exceptions=True,
+            )
+            await asyncio.sleep(4)  # Under 5s price TTL — Binance/Bybit prices never expire
 
     async def _trade_loop(self) -> None:
         """
@@ -1077,6 +1130,36 @@ class Strategy(BaseStrategy):
             except Exception as e:
                 logger.warning("cex_arb_loop_error", error=str(e))
             await asyncio.sleep(0.5)
+
+    async def _flush_trades_loop(self) -> None:
+        """
+        Flush buffered trade rows to Supabase every 60s as a single batch insert.
+        This reduces DB writes from ~2400/min (20 per 500ms tick) to 1/min.
+        """
+        _MAX_BUFFER = 200  # Hard cap — discard oldest if buffer grows beyond this
+        while True:
+            await asyncio.sleep(60)
+            if not self._trade_buffer:
+                continue
+            # Trim buffer to prevent unbounded accumulation during Supabase outages
+            if len(self._trade_buffer) > _MAX_BUFFER:
+                self._trade_buffer = self._trade_buffer[-_MAX_BUFFER:]
+            rows, self._trade_buffer = self._trade_buffer, []
+            try:
+                loop = asyncio.get_event_loop()
+                await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: self._db.table("trades").insert(rows).execute()
+                    ),
+                    timeout=8.0,  # Hard limit — Supabase slow/unreachable can't freeze the loop
+                )
+                logger.debug("cex_trades_flushed", count=len(rows))
+            except asyncio.TimeoutError:
+                logger.warning("cex_flush_timeout", count=len(rows))
+                # Discard on timeout — don't re-queue or the buffer grows unboundedly
+            except Exception as e:
+                logger.warning("cex_flush_error", error=str(e), count=len(rows))
 
     async def _tick(self) -> None:
         """
@@ -1150,7 +1233,19 @@ class Strategy(BaseStrategy):
         if not to_execute:
             return
 
-        logger.info("cex_tick_executing",
+        # Paper mode: cap at 500 trades/day to prevent DB bloat
+        if self._is_paper:
+            today = datetime.utcnow().strftime("%Y-%m-%d")
+            if today != self._paper_trades_date:
+                self._paper_trades_date = today
+                self._paper_trades_today = 0
+            remaining = max(0, 500 - self._paper_trades_today)
+            if remaining == 0:
+                return
+            to_execute = to_execute[:remaining]
+            self._paper_trades_today += len(to_execute)
+
+        logger.debug("cex_tick_executing",
                     count=len(to_execute),
                     symbols=[o.symbol for o in to_execute[:5]],
                     total_found=len(opportunities))
@@ -1161,20 +1256,13 @@ class Strategy(BaseStrategy):
             return_exceptions=True,
         )
 
-        # Batch-insert all trade rows in one DB call (avoids 20 simultaneous connections)
+        # Buffer rows — flushed to DB every 60s by _flush_trades_loop
         rows = [r for r in raw_results if isinstance(r, dict)]
         if rows:
-            try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(
-                    None,
-                    lambda: self._db.table("trades").insert(rows).execute()
-                )
-            except Exception as e:
-                logger.warning("cex_batch_log_error", error=str(e), count=len(rows))
+            self._trade_buffer.extend(rows)
 
-    async def _execute_one(self, opp: ArbOpportunity, regime: str) -> None:
-        """Execute a single arb opportunity and log result."""
+    async def _execute_one(self, opp: ArbOpportunity, regime: str) -> Optional[dict]:
+        """Execute a single arb opportunity. Returns trade row dict for batch DB insert."""
         try:
             if self._is_paper:
                 result = await self._paper_sim.simulate_trade(opp, self._config)
@@ -1203,8 +1291,6 @@ class Strategy(BaseStrategy):
                 self._stats["losses"] += 1
                 self._stats["by_pair"][pair_key]["losses"] += 1
 
-            await self._log_trade(opp, result, regime)
-
             if not self._is_paper and result.success and result.net_profit_usdc > 0:
                 await self._tax.on_trade_closed(
                     trade_id=opp.opportunity_id,
@@ -1214,48 +1300,58 @@ class Strategy(BaseStrategy):
                     asset=opp.symbol[:3],
                     gross_sell_value_usdc=opp.trade_size_usdc,
                 )
+
+            # Return row for batch insert (avoids 20 simultaneous DB connections)
+            return self._build_trade_row(opp, result, regime)
+
+        except Exception as e:
+            logger.warning("cex_execute_error", error=str(e), symbol=opp.symbol)
+            return None
         finally:
             if self._planner:
                 self._planner.register_trade_end(opp.symbol)
 
+    def _build_trade_row(
+        self, opp: ArbOpportunity, result: TradeResult, regime: str
+    ) -> dict:
+        """Build trade row dict for DB insert."""
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "id":               opp.opportunity_id,
+            "strategy_id":      self.STRATEGY_ID,
+            "version_tag":      VERSION_TAG,
+            "market_id":        f"cex_arb_{opp.symbol}",
+            "symbol":           opp.symbol,
+            "exchange":         f"{opp.buy_exchange}+{opp.sell_exchange}",
+            "node_id":          "singapore-01",
+            "pool_id":          "crypto_sg",
+            "direction":        "CEX_ARB",
+            "entry_price":      opp.buy_price,
+            "size_usdc":        opp.trade_size_usdc,
+            "kelly_fraction":   1.0,
+            "leverage":         1.0,
+            "ai_confidence":    0.95,
+            "ai_reasoning":     f"Gap:{opp.gap_pct:.4f}% Net:{opp.net_profit_pct:.4f}%",
+            "opportunity_score": 60 + opp.net_profit_pct * 100,
+            "edge_detected":    opp.net_profit_pct / 100,
+            "regime_at_trade":  regime,
+            "is_paper":         result.is_paper,
+            "slot":             os.getenv("DEPLOY_SLOT", "green"),
+            "latency_ms":       result.execution_ms,
+            "created_at":       now,
+            "outcome":          "won" if result.success and result.net_profit_usdc > 0 else "lost",
+            "exit_price":       result.sell_fill_price,
+            "pnl_usdc":         result.net_profit_usdc,
+            "resolved_at":      now,
+        }
+
     async def _log_trade(
         self, opp: ArbOpportunity, result: TradeResult, regime: str
     ) -> None:
+        """Single-trade DB write (used by on_market_signal path). Sync call, non-blocking."""
         try:
-            row = {
-                "id":               opp.opportunity_id,
-                "strategy_id":      self.STRATEGY_ID,
-                "version_tag":      VERSION_TAG,
-                "market_id":        f"cex_arb_{opp.symbol}",
-                "symbol":           opp.symbol,
-                "exchange":         f"{opp.buy_exchange}+{opp.sell_exchange}",
-                "node_id":          "singapore-01",
-                "pool_id":          "crypto_sg",
-                "direction":        "CEX_ARB",
-                "entry_price":      opp.buy_price,
-                "size_usdc":        opp.trade_size_usdc,
-                "kelly_fraction":   1.0,
-                "leverage":         1.0,
-                "ai_confidence":    0.95,
-                "ai_reasoning":     f"Gap:{opp.gap_pct:.4f}% Net:{opp.net_profit_pct:.4f}%",
-                "opportunity_score": 60 + opp.net_profit_pct * 100,
-                "edge_detected":    opp.net_profit_pct / 100,
-                "regime_at_trade":  regime,
-                "is_paper":         result.is_paper,
-                "slot":             os.getenv("DEPLOY_SLOT", "green"),
-                "latency_ms":       result.execution_ms,
-                "created_at":       datetime.now(timezone.utc).isoformat(),
-                "outcome":          "won" if result.success and result.net_profit_usdc > 0 else "lost",
-                "exit_price":       result.sell_fill_price,
-                "pnl_usdc":         result.net_profit_usdc,
-                "resolved_at":      datetime.now(timezone.utc).isoformat(),
-            }
-            # supabase-py execute() is synchronous — run in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: self._db.table("trades").insert(row).execute()
-            )
+            row = self._build_trade_row(opp, result, regime)
+            self._db.table("trades").insert(row).execute()
         except Exception as e:
             logger.warning("cex_trade_log_error", error=str(e))
 

@@ -394,11 +394,21 @@ class PositionManager:
         """
         Reload open positions from Supabase on startup.
         Enforces max_total_deployed and deduplicates by symbol — marks excess as closed.
+        Runs DB calls in executor with 15s timeout so startup never hangs if Supabase is slow.
         """
         try:
-            result = self._db.table("funding_positions").select("*").eq(
-                "status", "holding"
-            ).eq("node_id", "singapore-01").execute()
+            loop = asyncio.get_event_loop()
+
+            # Run blocking SELECT in thread pool so event loop isn't blocked
+            def _select():
+                return self._db.table("funding_positions").select("*").eq(
+                    "status", "holding"
+                ).eq("node_id", "singapore-01").execute()
+
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, _select),
+                timeout=15.0,
+            )
 
             seen_symbols: set = set()
             total_deployed = 0.0
@@ -420,17 +430,23 @@ class PositionManager:
                 seen_symbols.add(pos.symbol)
                 total_deployed += size
 
-            # Mark excess positions as closed in DB so they don't re-appear
-            for pid in excess_ids:
-                try:
-                    self._db.table("funding_positions").update({
-                        "status": "closed",
-                        "close_data": {"reason": "excess_on_startup", "closed_at": datetime.now(timezone.utc).isoformat()}
-                    }).eq("id", pid).execute()
-                except Exception:
-                    pass
+            # Mark excess positions as closed (fire-and-forget, non-blocking)
+            if excess_ids:
+                close_time = datetime.now(timezone.utc).isoformat()
+                def _close_excess():
+                    for pid in excess_ids:
+                        try:
+                            self._db.table("funding_positions").update({
+                                "status": "closed",
+                                "close_data": {"reason": "excess_on_startup", "closed_at": close_time}
+                            }).eq("id", pid).execute()
+                        except Exception:
+                            pass
+                asyncio.create_task(loop.run_in_executor(None, _close_excess))
 
             logger.info("funding_positions_loaded", count=len(self._positions), excess_closed=len(excess_ids), total_deployed=round(total_deployed, 2))
+        except asyncio.TimeoutError:
+            logger.warning("funding_positions_load_timeout", detail="Supabase unreachable, starting with empty positions")
         except Exception as e:
             logger.warning("funding_positions_load_error", error=str(e))
 
@@ -786,34 +802,42 @@ class FundingTracker:
         rate_8h: float,
         payment_time: datetime,
     ) -> None:
-        """Record funding payment to Supabase."""
-        try:
-            self._db.table("funding_payments").insert({
-                "position_id": pos.position_id,
-                "symbol": pos.symbol,
-                "payment_time": payment_time.isoformat(),
-                "amount_usdc": round(amount, 6),
-                "rate_8h": rate_8h,
-                "annualised_rate": rate_8h * 3 * 365,
-                "perp_size_usdc": pos.perp_size_usdc,
-                "is_paper": pos.is_paper,
-                # pos.funding_collected_usdc already has this payment added by
-                # mark_funding_collected — do NOT add amount again (was double-counting)
-                "cumulative_total": pos.funding_collected_usdc,
-            }).execute()
-        except Exception as e:
-            logger.warning("funding_payment_log_error", error=str(e))
+        """Record funding payment to Supabase (fire-and-forget, non-blocking)."""
+        row = {
+            "position_id": pos.position_id,
+            "symbol": pos.symbol,
+            "payment_time": payment_time.isoformat(),
+            "amount_usdc": round(amount, 6),
+            "rate_8h": rate_8h,
+            "annualised_rate": rate_8h * 3 * 365,
+            "perp_size_usdc": pos.perp_size_usdc,
+            "is_paper": pos.is_paper,
+            # pos.funding_collected_usdc already has this payment added by
+            # mark_funding_collected — do NOT add amount again (was double-counting)
+            "cumulative_total": pos.funding_collected_usdc,
+        }
+        def _insert():
+            try:
+                self._db.table("funding_payments").insert(row).execute()
+            except Exception as e:
+                logger.warning("funding_payment_log_error", error=str(e))
+        asyncio.get_event_loop().run_in_executor(None, _insert)
 
     async def _sync_position_funding(self, pos: OpenPosition) -> None:
         """Write funding totals back to funding_positions row so API/dashboard
         can read real P&L without waiting for position close."""
-        try:
-            self._db.table("funding_positions").update({
-                "funding_collected_usdc":   round(pos.funding_collected_usdc, 6),
-                "funding_payments_received": pos.funding_payments_received,
-            }).eq("id", pos.position_id).execute()
-        except Exception as e:
-            logger.warning("position_funding_sync_error", error=str(e))
+        pid = pos.position_id
+        collected = round(pos.funding_collected_usdc, 6)
+        payments = pos.funding_payments_received
+        def _sync():
+            try:
+                self._db.table("funding_positions").update({
+                    "funding_collected_usdc":    collected,
+                    "funding_payments_received": payments,
+                }).eq("id", pid).execute()
+            except Exception as e:
+                logger.warning("position_funding_sync_error", error=str(e))
+        asyncio.get_event_loop().run_in_executor(None, _sync)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -905,7 +929,7 @@ class Strategy(BaseStrategy):
         # Refresh config (propagates dashboard changes in < 30s)
         await self._config.refresh()
 
-        self.logger.info("a_m2_signal_received",
+        self.logger.debug("a_m2_signal_received",
                          symbol=market.symbol if market else "?",
                          funding_apr=round(market.funding.rate_annualised * 100, 2) if market and market.funding else 0,
                          allocated=round(allocated_usdc, 2),
@@ -940,7 +964,7 @@ class Strategy(BaseStrategy):
             ann = market.funding.rate_annualised
             rate_8h = market.funding.current_rate
             price = market.price or 0
-            self.logger.info("a_m2_market_eval",
+            self.logger.debug("a_m2_market_eval",
                              symbol=market.symbol,
                              apr_pct=round(ann * 100, 2),
                              rate_8h=round(rate_8h * 100, 4),
@@ -965,7 +989,7 @@ class Strategy(BaseStrategy):
             if opp.symbol not in seen:
                 opportunities.append(opp)
 
-        self.logger.info("a_m2_opportunities_found",
+        self.logger.debug("a_m2_opportunities_found",
                          direct=len([o for o in opportunities if o.symbol == (market.symbol if market else "")]),
                          monitored=len(monitored_opps),
                          total=len(opportunities))
@@ -985,7 +1009,7 @@ class Strategy(BaseStrategy):
         # Check capacity
         can_open, reason = self._position_manager.can_open_new()
         if not can_open:
-            self.logger.info("a_m2_capacity_full", reason=reason)
+            self.logger.debug("a_m2_capacity_full", reason=reason)
             return None
 
         # Calculate size — use at least min_position_size if allocated is too small
@@ -1168,42 +1192,49 @@ class Strategy(BaseStrategy):
                     total_pnl=round(total_pnl, 4))
 
     async def _log_position_open(self, pos: OpenPosition, fill: dict, regime: str) -> None:
-        try:
-            self._db.table("funding_positions").insert({
-                "id": pos.position_id,
-                "symbol": pos.symbol,
-                "direction": pos.direction.value,
-                "spot_size_usdc": pos.spot_size_usdc,
-                "perp_size_usdc": pos.perp_size_usdc,
-                "spot_entry_price": pos.spot_entry_price,
-                "perp_entry_price": pos.perp_entry_price,
-                "spot_quantity": pos.spot_quantity,
-                "entry_apr": pos.entry_apr,
-                "current_apr": pos.current_apr,
-                "status": pos.status.value,
-                "is_paper": pos.is_paper,
-                "node_id": "singapore-01",
-                "regime_at_open": regime,
-                "opened_at": pos.opened_at.isoformat(),
-                "strategy_id": self.STRATEGY_ID,
-                "version_tag": VERSION_TAG,
-                "fill_data": fill,
-            }).execute()
-        except Exception as e:
-            logger.warning("position_open_log_error", error=str(e))
+        row = {
+            "id": pos.position_id,
+            "symbol": pos.symbol,
+            "direction": pos.direction.value,
+            "spot_size_usdc": pos.spot_size_usdc,
+            "perp_size_usdc": pos.perp_size_usdc,
+            "spot_entry_price": pos.spot_entry_price,
+            "perp_entry_price": pos.perp_entry_price,
+            "spot_quantity": pos.spot_quantity,
+            "entry_apr": pos.entry_apr,
+            "current_apr": pos.current_apr,
+            "status": pos.status.value,
+            "is_paper": pos.is_paper,
+            "node_id": "singapore-01",
+            "regime_at_open": regime,
+            "opened_at": pos.opened_at.isoformat(),
+            "strategy_id": self.STRATEGY_ID,
+            "version_tag": VERSION_TAG,
+            "fill_data": fill,
+        }
+        def _insert():
+            try:
+                self._db.table("funding_positions").insert(row).execute()
+            except Exception as e:
+                logger.warning("position_open_log_error", error=str(e))
+        asyncio.get_event_loop().run_in_executor(None, _insert)
 
     async def _log_position_close(self, pos: OpenPosition, close_data: dict, total_pnl: float) -> None:
-        try:
-            self._db.table("funding_positions").update({
-                "status": "closed",
-                "funding_collected_usdc": pos.funding_collected_usdc,
-                "funding_payments_received": pos.funding_payments_received,
-                "total_pnl_usdc": total_pnl,
-                "closed_at": datetime.now(timezone.utc).isoformat(),
-                "close_data": close_data,
-            }).eq("id", pos.position_id).execute()
-        except Exception as e:
-            logger.warning("position_close_log_error", error=str(e))
+        pid = pos.position_id
+        update = {
+            "status": "closed",
+            "funding_collected_usdc": pos.funding_collected_usdc,
+            "funding_payments_received": pos.funding_payments_received,
+            "total_pnl_usdc": total_pnl,
+            "closed_at": datetime.now(timezone.utc).isoformat(),
+            "close_data": close_data,
+        }
+        def _update():
+            try:
+                self._db.table("funding_positions").update(update).eq("id", pid).execute()
+            except Exception as e:
+                logger.warning("position_close_log_error", error=str(e))
+        asyncio.get_event_loop().run_in_executor(None, _update)
 
     # ── HEALTH STATUS ─────────────────────────────────────────────────────
 
@@ -1275,10 +1306,11 @@ class Strategy(BaseStrategy):
                 k for k, v in gates["gates"].items() if not v["passed"]
             ])
             return False
-        self._db.table("strategy_flags").update({
-            "enabled": True, "mode": "live",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("strategy_id", "A_M2_funding_rate").execute()
+        update = {"enabled": True, "mode": "live", "updated_at": datetime.now(timezone.utc).isoformat()}
+        asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: self._db.table("strategy_flags").update(update).eq("strategy_id", "A_M2_funding_rate").execute()
+        )
         await self.on_promote_to_live()
         return True
 
@@ -1600,18 +1632,26 @@ class FundingPromotionGates:
 
     async def _get_paper_positions(self) -> list:
         try:
-            result = self._db.table("funding_positions").select("*").eq(
-                "is_paper", True
-            ).eq("strategy_id", "A_M2_funding_rate").execute()
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._db.table("funding_positions").select("*").eq(
+                    "is_paper", True
+                ).eq("strategy_id", "A_M2_funding_rate").execute()),
+                timeout=10.0,
+            )
             return result.data or []
         except Exception:
             return []
 
     async def _get_paper_payments(self) -> list:
         try:
-            result = self._db.table("funding_payments").select("id, position_id").eq(
-                "is_paper", True
-            ).execute()
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._db.table("funding_payments").select("id, position_id").eq(
+                    "is_paper", True
+                ).execute()),
+                timeout=10.0,
+            )
             return result.data or []
         except Exception:
             return []

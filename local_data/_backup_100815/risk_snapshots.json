@@ -1,0 +1,176 @@
+[
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [],
+    "kelly_multiplier": 0.75,
+    "id": "7931bb26-a7f8-4763-903b-d9d0bdaf7958",
+    "created_at": "2026-04-18T04:37:30.096745"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "9b9171da-1085-487f-a35e-e36f23ed6cbd",
+    "created_at": "2026-04-18T04:37:38.534586"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "bd1d9474-ae89-4fa8-82e8-ba3660813b55",
+    "created_at": "2026-04-18T04:37:38.589235"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "3cc25cbd-f283-4177-855d-57507871d7c3",
+    "created_at": "2026-04-18T04:37:41.710403"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "48a4f631-c0b8-4178-b952-f16f54bdc526",
+    "created_at": "2026-04-18T04:37:49.533346"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "bcc4d2a5-dbf3-4b1f-ba57-c891cca07c22",
+    "created_at": "2026-04-18T04:37:49.751052"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "10a3f369-4c78-4892-ae05-33a0ff31dc27",
+    "created_at": "2026-04-18T04:37:52.037539"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [],
+    "kelly_multiplier": 0.75,
+    "id": "b19692a8-c3e0-4a95-b757-3075f3ef1464",
+    "created_at": "2026-04-18T04:38:00.744878"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [],
+    "kelly_multiplier": 0.75,
+    "id": "992b0981-bdd6-4317-807e-462ccf3e7b34",
+    "created_at": "2026-04-18T04:38:01.133918"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [],
+    "kelly_multiplier": 0.75,
+    "id": "919985da-806d-4e7e-8f0b-de1cb7ea1c18",
+    "created_at": "2026-04-18T04:38:02.113366"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "9645182b-ee08-40e7-91e3-a2e6f01daf9d",
+    "created_at": "2026-04-18T04:38:11.133469"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "4191a505-bf74-45f6-b341-1c18dee50c74",
+    "created_at": "2026-04-18T04:38:11.235197"
+  },
+  {
+    "node_id": "singapore-01",
+    "regime": "BULL_RANGING",
+    "total_capital_usdc": 0.0,
+    "peak_capital_usdc": 0.0,
+    "drawdown_pct": 0.0,
+    "daily_pnl_usdc": 0.0,
+    "circuit_breakers_active": [
+      "D_LEV_event_futures"
+    ],
+    "kelly_multiplier": 0.75,
+    "id": "2de0cdd7-4c62-43bc-afcc-8a1e0f416516",
+    "created_at": "2026-04-18T04:38:12.447116"
+  }
+]

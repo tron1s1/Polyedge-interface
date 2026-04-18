@@ -6,6 +6,9 @@ import { api } from '../lib/api'
 import { usePolling } from '../hooks/useLiveData'
 import Badge from '../components/ui/Badge'
 import { cn } from '../utils/formatters'
+import TriangleScannerTab from '../components/strategy/TriangleScannerTab'
+import ExecutionRealityTab from '../components/strategy/ExecutionRealityTab'
+import PromotionGatesTab from '../components/strategy/PromotionGatesTab'
 import {
   ArrowLeft, Play, Pause, FlaskConical, Rocket, Settings2,
   TrendingUp, TrendingDown, Activity, Clock, Save, DollarSign,
@@ -138,6 +141,12 @@ export default function StrategyDetailPage() {
   const [showResetConfirm, setShowResetConfirm] = useState(false)
   const [resetting, setResetting] = useState(false)
   const [resetResult, setResetResult] = useState(null)
+  const [resetError, setResetError] = useState('')
+  const [toggling, setToggling] = useState(false)
+  const [localEnabled, setLocalEnabled] = useState(null)
+  useEffect(() => {
+    if (data?.strategy) setLocalEnabled(data.strategy.enabled)
+  }, [data?.strategy?.enabled])
 
   if (loading) {
     return (
@@ -191,9 +200,25 @@ export default function StrategyDetailPage() {
     }
   }
 
+  const isEnabled = localEnabled ?? data?.strategy?.enabled ?? false
+
   const handleToggle = async () => {
-    await api.toggleStrategy(strategyId)
-    refetch()
+    if (toggling) return
+    setToggling(true)
+    const next = !isEnabled
+    setLocalEnabled(next)  // optimistic
+    try {
+      const res = await api.toggleStrategy(strategyId)
+      if (!res) {
+        setLocalEnabled(!next)  // revert on failure
+      } else {
+        refetch()
+      }
+    } catch {
+      setLocalEnabled(!next)  // revert on error
+    } finally {
+      setToggling(false)
+    }
   }
 
   const handleModeChange = async (mode) => {
@@ -241,26 +266,39 @@ export default function StrategyDetailPage() {
 
   const handleResetAllocate = async () => {
     setResetting(true)
+    setResetError('')
     try {
       const res = await api.resetAndAllocate(strategyId, mode)
       if (res && !res.error) {
         setResetResult(res)
         setShowResetConfirm(false)
         refetch()
+      } else {
+        setResetError(res?.detail || 'Reset failed — check API server and Supabase connection.')
       }
     } catch (e) {
-      console.error('Reset failed', e)
+      setResetError(e.message || 'Reset failed — unexpected error.')
     } finally {
       setResetting(false)
     }
   }
 
-  const tabs = [
+  const baseTabs = [
     { id: 'overview', label: 'Overview' },
     { id: 'trades', label: `Trades (${trades.length})` },
+    { id: 'gates', label: 'Promotion Gates' },
     { id: 'config', label: 'Config' },
     { id: 'versions', label: `Versions (${versions.length})` },
   ]
+
+  // Add triangle scanner + execution reality tabs for A_M1
+  const tabs = strategyId === 'A_M1_triangular_arb'
+    ? [
+        { id: 'scanner', label: 'Triangle Scanner' },
+        { id: 'execution_reality', label: 'Execution Reality' },
+        ...baseTabs,
+      ]
+    : baseTabs
 
   return (
     <div className="p-6 space-y-5">
@@ -291,14 +329,15 @@ export default function StrategyDetailPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={handleToggle}
+              disabled={toggling}
               className={cn(
-                'px-3 py-1.5 text-[10px] font-medium flex items-center gap-1 transition-colors',
-                strategy.enabled
+                'px-3 py-1.5 text-[10px] font-medium flex items-center gap-1 transition-colors disabled:opacity-50',
+                isEnabled
                   ? 'bg-[#1D9E75]/10 text-[#1D9E75] border border-[#1D9E75]/30'
                   : 'bg-[var(--color-muted)] text-[var(--color-muted-foreground)] border border-[var(--color-border)]'
               )}
             >
-              {strategy.enabled ? <><Play size={10} /> Running</> : <><Pause size={10} /> Stopped</>}
+              {toggling ? '...' : isEnabled ? <><Play size={10} /> Running</> : <><Pause size={10} /> Stopped</>}
             </button>
           </div>
         </div>
@@ -408,6 +447,14 @@ export default function StrategyDetailPage() {
       </div>
 
       {/* Tab Content */}
+      {activeTab === 'scanner' && (
+        <TriangleScannerTab />
+      )}
+
+      {activeTab === 'execution_reality' && (
+        <ExecutionRealityTab strategyId={strategyId} />
+      )}
+
       {activeTab === 'overview' && (
         <div className="space-y-4">
           {/* Strategy Info */}
@@ -419,7 +466,7 @@ export default function StrategyDetailPage() {
                 ['Node', node?.name || strategy.node_id],
                 ['File', strategy.file_name || `${strategyId}.py`],
                 ['Plugin', hasPlugin ? 'Loaded & Wired' : 'Not built yet'],
-                ['Status', strategy.enabled ? 'Running' : 'Stopped'],
+                ['Status', isEnabled ? 'Running' : 'Stopped'],
                 ['Mode', (strategy.mode || 'paper').toUpperCase()],
                 ['Version', strategy.version_tag || 'v1'],
               ].map(([k, v]) => (
@@ -506,7 +553,7 @@ export default function StrategyDetailPage() {
                 Recent Trades
               </div>
               {trades.slice(0, 10).map((t, i) => (
-                <div key={i} className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)] last:border-0 text-[10px]">
+                <div key={t.id || (t.triangle_id ? `${t.triangle_id}-${t.created_at}` : i)} className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)] last:border-0 text-[10px]">
                   <span className="mono w-[130px] shrink-0 text-[var(--color-muted-foreground)]">
                     {t.created_at ? new Date(t.created_at).toLocaleString() : '—'}
                   </span>
@@ -524,10 +571,10 @@ export default function StrategyDetailPage() {
             </div>
           ) : (
             <div className="border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-8 text-center text-[11px] text-[var(--color-muted-foreground)]">
-              No trades yet. {!strategy.enabled && 'Enable the strategy and allocate capital to start paper trading.'}
-              {strategy.enabled && paperCapital === 0 && 'Allocate capital to start paper trading.'}
-              {strategy.enabled && paperCapital > 0 && !hasPlugin && 'Strategy plugin is not built yet.'}
-              {strategy.enabled && paperCapital > 0 && hasPlugin && 'Waiting for market signals...'}
+              No trades yet. {!isEnabled && 'Enable the strategy and allocate capital to start paper trading.'}
+              {isEnabled && paperCapital === 0 && 'Allocate capital to start paper trading.'}
+              {isEnabled && paperCapital > 0 && !hasPlugin && 'Strategy plugin is not built yet.'}
+              {isEnabled && paperCapital > 0 && hasPlugin && 'Waiting for market signals...'}
             </div>
           )}
         </div>
@@ -547,7 +594,7 @@ export default function StrategyDetailPage() {
             <span className="flex-1">Reasoning</span>
           </div>
           {trades.length > 0 ? trades.map((t, i) => (
-            <div key={i} className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)] last:border-0 text-[10px]">
+            <div key={t.id || t.triangle_id ? `${t.triangle_id}-${t.created_at}` : i} className="flex items-center gap-4 px-4 py-2 border-b border-[var(--color-border)] last:border-0 text-[10px]">
               <span className="mono w-[130px] shrink-0 text-[var(--color-muted-foreground)]">
                 {t.created_at ? new Date(t.created_at).toLocaleString() : '—'}
               </span>
@@ -570,6 +617,10 @@ export default function StrategyDetailPage() {
             </div>
           )}
         </div>
+      )}
+
+      {activeTab === 'gates' && (
+        <PromotionGatesTab strategyId={strategyId} />
       )}
 
       {activeTab === 'config' && (
@@ -928,7 +979,7 @@ export default function StrategyDetailPage() {
               <div className="p-3 bg-[#E24B4A]/10 border border-[#E24B4A]/40 space-y-3">
                 <div className="text-[10px] font-medium text-[#E24B4A]">Confirm Reset & Compound</div>
                 <div className="text-[10px] text-[var(--color-muted-foreground)] space-y-1">
-                  <div>• <span className="text-[var(--color-foreground)]">{trades.length} trades</span> will be permanently deleted</div>
+                  <div>• <span className="text-[var(--color-foreground)]">{stats?.total_trades || trades.length} trades</span> will be permanently deleted</div>
                   <div>• Current effective pool <span className="mono font-medium text-[#1D9E75]">${effectiveCapital.toFixed(2)}</span> becomes new base</div>
                   <div>• P&L counter resets to <span className="mono font-medium">$0</span> — fresh tracking from ${effectiveCapital.toFixed(2)}</div>
                 </div>
@@ -941,12 +992,15 @@ export default function StrategyDetailPage() {
                     {resetting ? 'Resetting...' : 'Confirm Reset'}
                   </button>
                   <button
-                    onClick={() => setShowResetConfirm(false)}
+                    onClick={() => { setShowResetConfirm(false); setResetError('') }}
                     className="px-3 py-1.5 text-[10px] font-medium text-[var(--color-muted-foreground)] border border-[var(--color-border)]"
                   >
                     Cancel
                   </button>
                 </div>
+                {resetError && (
+                  <div className="text-[10px] text-[#E24B4A] mt-1">{resetError}</div>
+                )}
               </div>
             )}
 

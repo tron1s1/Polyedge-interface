@@ -127,14 +127,20 @@ class TieredCache:
     def __init__(self, redis_url: str):
         self._L1: dict[str, tuple[Any, float]] = {}  # value, expiry_timestamp
         self._redis: Optional[aioredis.Redis] = None
-        self._redis_url = redis_url
+        # Fix: replace 'localhost' with '127.0.0.1' to force IPv4
+        # Windows resolves 'localhost' to IPv6 (::1) but Docker Redis listens on IPv4 only
+        self._redis_url = redis_url.replace("localhost", "127.0.0.1")
 
     async def connect(self):
-        self._redis = await aioredis.from_url(
+        pool = aioredis.ConnectionPool.from_url(
             self._redis_url,
-            encoding="utf-8",
-            decode_responses=False,  # raw bytes for msgpack
+            max_connections=200,        # Scanner has many concurrent tasks + strategies
+            decode_responses=False,     # raw bytes for msgpack
+            socket_timeout=5,
+            socket_connect_timeout=5,
+            retry_on_timeout=True,
         )
+        self._redis = aioredis.Redis(connection_pool=pool)
 
     def _get_ttl(self, key: str) -> int:
         for prefix, ttl in self.TTL.items():

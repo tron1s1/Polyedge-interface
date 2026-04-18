@@ -1,0 +1,11 @@
+[
+  {
+    "node_id": "singapore-01",
+    "name": "Node 1 \u2014 Singapore",
+    "region": "Singapore",
+    "status": "online",
+    "last_heartbeat": "2026-04-18T23:17:13.798975",
+    "id": "7b73cbb5-4e2f-4998-993a-7c5cdc24d84b",
+    "created_at": "2026-04-18T06:36:06.949235"
+  }
+]

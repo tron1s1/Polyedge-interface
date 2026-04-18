@@ -1,0 +1,20 @@
+[
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "enabled": true,
+    "mode": "paper",
+    "max_capital": 10000.0
+  },
+  {
+    "strategy_id": "A_CEX_cross_arb",
+    "enabled": false,
+    "mode": "paper",
+    "max_capital": 5000.0
+  },
+  {
+    "strategy_id": "A_M2_funding_rate",
+    "enabled": false,
+    "mode": "paper",
+    "max_capital": 5000.0
+  }
+]

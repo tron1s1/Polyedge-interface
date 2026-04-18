@@ -124,13 +124,20 @@ class DynamicCapitalAllocator:
             "regime": regime,
         })
 
-        # Store in Supabase for dashboard
-        self._db.table("capital_pools").update({
+        # Store in Supabase for dashboard (fire-and-forget, non-blocking)
+        import asyncio as _asyncio
+        _upd = {
             "current_balance": current_capital,
             "reserved_crash": crash_reserve,
             "reinvestable": deployable,
-            "updated_at": "now()"
-        }).eq("pool_id", "crypto_sg").execute()
+            "updated_at": "now()",
+        }
+        def _write_pool():
+            try:
+                self._db.table("capital_pools").update(_upd).eq("pool_id", "crypto_sg").execute()
+            except Exception:
+                pass
+        _asyncio.get_event_loop().run_in_executor(None, _write_pool)
 
         logger.info("allocation_updated",
                     regime=regime,

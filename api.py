@@ -1,23 +1,37 @@
 """
-Dashboard FastAPI backend — reads live data from Supabase.
+Dashboard FastAPI backend — reads live data from local JSON store or Supabase.
 Run: uvicorn api:app --reload --port 8000
+
+Toggle storage:
+  STORAGE_MODE=local   → JSON files in local_data/ (default, fast, no network)
+  STORAGE_MODE=supabase → Supabase PostgREST (set SUPABASE_URL + SUPABASE_SERVICE_KEY in .env)
 """
 import os
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from supabase import create_client
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+STORAGE_MODE = os.getenv("STORAGE_MODE", "local").lower()
 
-if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+if STORAGE_MODE == "supabase":
+    from supabase import create_client, ClientOptions
+    SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+    SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set in .env")
+    db = create_client(
+        SUPABASE_URL,
+        SUPABASE_SERVICE_KEY,
+        options=ClientOptions(postgrest_client_timeout=10),
+    )
+else:
+    from local_db import LocalDB
+    db = LocalDB(os.path.join(os.path.dirname(__file__), "local_data"))
 
-db = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+SCANNER_HEALTH_URL = os.getenv("SCANNER_HEALTH_URL", "http://127.0.0.1:8080")
 
 app = FastAPI(title="AlphaNode Dashboard API", version="1.0.0")
 
@@ -28,6 +42,57 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Background sync: pull live data from scanner health API into local DB ──
+import asyncio
+import httpx
+
+_sync_task = None
+
+async def _scanner_sync_loop():
+    """Every 10s, poll scanner health API and update local DB (nodes heartbeat, regime, etc.)."""
+    if STORAGE_MODE != "local":
+        return
+    await asyncio.sleep(2)  # Wait for startup
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        while True:
+            try:
+                r = await client.get(f"{SCANNER_HEALTH_URL}/health")
+                if r.status_code == 200:
+                    data = r.json()
+                    now = datetime.utcnow().isoformat()
+                    node_id = data.get("node_id", "singapore-01")
+
+                    # Update node heartbeat
+                    nodes = db.table("nodes").select("*").eq("node_id", node_id).execute().data
+                    if nodes:
+                        db.table("nodes").update({
+                            "status": data.get("status", "online"),
+                            "last_heartbeat": now,
+                        }).eq("node_id", node_id).execute()
+                    else:
+                        db.table("nodes").insert({
+                            "node_id": node_id,
+                            "name": f"Node 1 — Singapore",
+                            "region": "Singapore",
+                            "status": data.get("status", "online"),
+                            "last_heartbeat": now,
+                        }).execute()
+
+                    # Update regime
+                    regime = data.get("regime", "UNKNOWN")
+                    if regime and regime != "UNKNOWN":
+                        db.table("deployment_config").update({"value": regime}).eq("key", "global_regime").execute()
+
+            except Exception:
+                pass
+            await asyncio.sleep(10)
+
+@app.on_event("startup")
+async def _start_sync():
+    global _sync_task
+    _sync_task = asyncio.create_task(_scanner_sync_loop())
 
 
 def safe_query(fn):
@@ -49,9 +114,68 @@ def safe_single(fn, default=None):
         return default
 
 
+# Strategies that log executions to strategy_executions instead of (or in addition to) trades
+_EXECUTION_TABLE_STRATEGIES = {"A_M1_triangular_arb"}
+
+
+def _execution_to_trade(e: dict) -> dict:
+    """
+    Convert a strategy_executions row into the standard trade shape expected by the frontend.
+    strategy_executions columns: id, strategy_id, triangle_id, is_paper, net_profit_pct,
+    net_profit_usdc, trade_size_usdc, execution_ms, status, error, created_at
+    """
+    net = float(e.get("net_profit_usdc") or 0)
+    status = e.get("status", "")
+    if status in ("success", "completed"):
+        outcome = "won" if net > 0 else "lost"
+    elif status == "failed":
+        outcome = "lost"
+    else:
+        outcome = "pending"
+
+    pct = float(e.get("net_profit_pct") or 0)
+    triangle_id = e.get("triangle_id") or e.get("strategy_id", "")
+    error_note = e.get("error") or ""
+    reasoning = f"Triangle: {triangle_id} | Profit: {net:+.4f} USDC ({pct:+.4f}%)"
+    if error_note:
+        reasoning += f" | Error: {error_note}"
+    if e.get("execution_ms"):
+        reasoning += f" | Exec: {e['execution_ms']}ms"
+
+    return {
+        "id": e.get("id"),
+        "strategy_id": e.get("strategy_id"),
+        "symbol": triangle_id,
+        "direction": "ARB",
+        "size_usdc": float(e.get("trade_size_usdc") or 0),
+        "entry_price": 0.0,
+        "outcome": outcome,
+        "pnl_usdc": net,
+        "edge_detected": round(pct, 4),
+        "is_paper": e.get("is_paper"),
+        "ai_reasoning": reasoning,
+        "created_at": e.get("created_at"),
+        "exchange": "binance",
+        "_source": "strategy_executions",
+    }
+
+
 @app.get("/api/version")
 def get_version():
-    return {"version": "pnl_fix_v2", "today_pnl_uses": "pnl_usdc_not_size"}
+    return {"version": "pnl_fix_v2", "today_pnl_uses": "pnl_usdc_not_size", "storage": STORAGE_MODE}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /api/local/reset   — prune all local data and re-seed defaults
+# Only works in local storage mode.
+# ─────────────────────────────────────────────────────────────────────────────
+@app.post("/api/local/reset")
+def reset_local_data():
+    """Wipe all local JSON data and re-seed defaults. No-op when using Supabase."""
+    if STORAGE_MODE != "local":
+        return {"message": "Not in local mode — nothing to reset", "storage": STORAGE_MODE}
+    db.reset_all()
+    return {"message": "All local data pruned and defaults re-seeded", "storage": "local"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +262,26 @@ def get_strategies():
     flags = safe_query(lambda: db.table("strategy_flags").select("*").execute())
     built_plugins = _get_built_plugins()
     all_trades = safe_query(lambda: db.table("trades").select("strategy_id,outcome,size_usdc,is_paper,pnl_usdc").execute())
+
+    # Merge strategy_executions rows (A_M1 and future execution-table strategies)
+    all_executions = safe_query(
+        lambda: db.table("strategy_executions")
+        .select("strategy_id,status,net_profit_usdc,trade_size_usdc,is_paper")
+        .order("created_at", desc=True)
+        .limit(5000)
+        .execute()
+    )
+    for e in all_executions:
+        net = float(e.get("net_profit_usdc") or 0)
+        st = e.get("status", "")
+        outcome = ("won" if net > 0 else "lost") if st in ("success", "completed") else ("lost" if st == "failed" else "pending")
+        all_trades.append({
+            "strategy_id": e.get("strategy_id"),
+            "outcome": outcome,
+            "size_usdc": float(e.get("trade_size_usdc") or 0),
+            "is_paper": e.get("is_paper"),
+            "pnl_usdc": net,
+        })
     open_positions = safe_query(
         lambda: db.table("funding_positions").select("id,strategy_id,funding_collected_usdc,is_paper")
         .neq("status", "closed").execute()
@@ -487,7 +631,180 @@ def get_strategy_trades(strategy_id: str, limit: int = 50):
         .limit(limit)
         .execute()
     )
+
+    # A_M1 triangular arb logs to strategy_executions, not the trades table.
+    # Merge executions in as the primary source for these strategies.
+    if strategy_id in _EXECUTION_TABLE_STRATEGIES:
+        executions = safe_query(
+            lambda: db.table("strategy_executions").select("*")
+            .eq("strategy_id", strategy_id)
+            .order("created_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        exec_trades = [_execution_to_trade(e) for e in executions]
+        # Merge and re-sort by time, keep top `limit`
+        combined = exec_trades + trades
+        combined.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+        trades = combined[:limit]
+
     return {"trades": trades, "count": len(trades)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /api/strategies/{strategy_id}/execution-reality
+#   Aggregated stats on actual execution quality: slippage per triangle,
+#   outcome distribution, latency percentiles. Drives the "Execution Reality"
+#   dashboard tab.
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/strategies/{strategy_id}/execution-reality")
+def get_execution_reality(strategy_id: str, limit: int = 500):
+    rows = safe_query(
+        lambda: db.table("strategy_executions").select("*")
+        .eq("strategy_id", strategy_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    ) or []
+
+    # Filter to the new-schema rows that have Approach D fields populated.
+    # Legacy rows don't have per-leg slippage / outcome_status.
+    rich = [r for r in rows if r.get("actual_net_pct") is not None
+                           and r.get("outcome_status")]
+
+    # Outcome distribution
+    outcomes: dict = {}
+    for r in rich:
+        k = r.get("outcome_status", "UNKNOWN")
+        outcomes[k] = outcomes.get(k, 0) + 1
+
+    # Slippage histogram buckets (bps): -5, -2, 0, 2, 5, 10, 20, 50, 100+
+    buckets = [(-1e9, -5), (-5, -2), (-2, 0), (0, 2), (2, 5), (5, 10),
+               (10, 20), (20, 50), (50, 100), (100, 1e9)]
+    bucket_labels = ["<-5", "-5..-2", "-2..0", "0..2", "2..5", "5..10",
+                     "10..20", "20..50", "50..100", "100+"]
+    slip_hist = {k: 0 for k in bucket_labels}
+    all_slips = []  # for latency-like aggregate stats
+    # Also bucket per-triangle for a per-triangle histogram
+    per_triangle_slip = {}
+
+    def _bucket_for(v):
+        for i, (lo, hi) in enumerate(buckets):
+            if lo <= v < hi:
+                return bucket_labels[i]
+        return bucket_labels[-1]
+
+    for r in rich:
+        tri = r.get("triangle_id", "unknown")
+        slips = r.get("per_leg_slippage_bps") or {}
+        if isinstance(slips, dict):
+            for leg_label, v in slips.items():
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    continue
+                slip_hist[_bucket_for(v)] += 1
+                all_slips.append(v)
+                per_triangle_slip.setdefault(tri, []).append(v)
+
+    # Latency percentiles from per_leg_latency_ms sums
+    total_latencies = []
+    for r in rich:
+        lat = r.get("per_leg_latency_ms") or {}
+        if isinstance(lat, dict) and lat:
+            try:
+                total = sum(float(v) for v in lat.values())
+                total_latencies.append(total)
+            except (TypeError, ValueError):
+                pass
+
+    def _pct(arr, p):
+        if not arr: return None
+        s = sorted(arr)
+        k = int(len(s) * p / 100)
+        if k >= len(s): k = len(s) - 1
+        return round(s[k], 2)
+
+    # Latency classification counts
+    latclass = {}
+    for r in rich:
+        k = r.get("latency_classification") or "unknown"
+        latclass[k] = latclass.get(k, 0) + 1
+
+    # Per-triangle rollup: mean slippage, count, mean actual_net_pct
+    per_triangle = []
+    triangle_stats = {}
+    for r in rich:
+        tri = r.get("triangle_id", "unknown")
+        ts = triangle_stats.setdefault(tri, {
+            "count": 0, "wins": 0, "losses": 0,
+            "sum_actual_pct": 0.0, "sum_expected_pct": 0.0,
+            "slips": [],
+        })
+        ts["count"] += 1
+        ap = r.get("actual_net_pct") or 0
+        ep = r.get("expected_net_pct") or 0
+        ts["sum_actual_pct"] += float(ap)
+        ts["sum_expected_pct"] += float(ep)
+        if r.get("outcome_status") == "COMPLETE" and float(ap) > 0:
+            ts["wins"] += 1
+        elif float(ap) < 0 or r.get("outcome_status") in ("PARTIAL_HEDGED", "FAILED"):
+            ts["losses"] += 1
+        slips = r.get("per_leg_slippage_bps") or {}
+        if isinstance(slips, dict):
+            for v in slips.values():
+                try:
+                    ts["slips"].append(float(v))
+                except (TypeError, ValueError):
+                    pass
+    for tri, ts in triangle_stats.items():
+        cnt = ts["count"] or 1
+        slips = ts["slips"]
+        per_triangle.append({
+            "triangle_id": tri,
+            "count": ts["count"],
+            "wins": ts["wins"],
+            "losses": ts["losses"],
+            "avg_actual_pct": round(ts["sum_actual_pct"] / cnt, 4),
+            "avg_expected_pct": round(ts["sum_expected_pct"] / cnt, 4),
+            "edge_lost_bps": round((ts["sum_expected_pct"] - ts["sum_actual_pct"]) / cnt * 100, 2),
+            "mean_slip_bps": round(sum(slips) / len(slips), 2) if slips else 0.0,
+            "max_slip_bps": round(max(slips), 2) if slips else 0.0,
+        })
+    per_triangle.sort(key=lambda x: x["count"], reverse=True)
+
+    # Overall winrate headline (COMPLETE positive trades / (wins+losses))
+    wins = sum(1 for r in rich if r.get("outcome_status") == "COMPLETE"
+                                  and (r.get("actual_net_pct") or 0) > 0)
+    losses_pct_neg = sum(1 for r in rich if (r.get("actual_net_pct") or 0) < 0)
+    partial = sum(1 for r in rich if r.get("outcome_status") == "PARTIAL_HEDGED")
+    nofill = sum(1 for r in rich if r.get("outcome_status") == "NO_FILL")
+    failed = sum(1 for r in rich if r.get("outcome_status") == "FAILED")
+    # Dashboard-style winrate: exclude NO_FILL (no capital risked)
+    denom = wins + losses_pct_neg + partial + failed
+    winrate = round(wins / denom * 100, 2) if denom else None
+
+    return {
+        "strategy_id": strategy_id,
+        "sample_size": len(rich),
+        "legacy_rows_excluded": len(rows) - len(rich),
+        "outcome_distribution": outcomes,
+        "latency_classification": latclass,
+        "latency_ms_p50": _pct(total_latencies, 50),
+        "latency_ms_p95": _pct(total_latencies, 95),
+        "latency_ms_p99": _pct(total_latencies, 99),
+        "latency_ms_max": round(max(total_latencies), 2) if total_latencies else None,
+        "slippage_histogram": [{"bucket": k, "count": slip_hist[k]} for k in bucket_labels],
+        "mean_slippage_bps": round(sum(all_slips) / len(all_slips), 2) if all_slips else None,
+        "max_slippage_bps": round(max(all_slips), 2) if all_slips else None,
+        "winrate_pct": winrate,
+        "wins": wins,
+        "losses": losses_pct_neg,
+        "partial_hedged": partial,
+        "no_fill": nofill,
+        "failed": failed,
+        "per_triangle": per_triangle[:50],  # Top 50 by frequency
+    }
 
 
 @app.get("/api/config/apis")
@@ -570,8 +887,15 @@ def get_strategy_detail(strategy_id: str):
     plugin["strategy_config"] = merged_config
     plugin["default_config"] = default_config
 
-    # Recent trades
-    trades = safe_query(
+    # All trades (stats only — large limit to avoid unbounded scan while still getting correct totals)
+    all_trades_stats = safe_query(
+        lambda: db.table("trades").select("outcome,pnl_usdc,size_usdc,is_paper")
+        .eq("strategy_id", strategy_id)
+        .limit(5000)
+        .execute()
+    )
+    # Recent trades for the UI trades list
+    trades_from_table = safe_query(
         lambda: db.table("trades").select("*")
         .eq("strategy_id", strategy_id)
         .order("created_at", desc=True)
@@ -579,17 +903,54 @@ def get_strategy_detail(strategy_id: str):
         .execute()
     )
 
-    # Compute stats from trades
-    won = [t for t in trades if t.get("outcome") == "won"]
-    lost = [t for t in trades if t.get("outcome") == "lost"]
-    # Use pnl_usdc when available (instant strategies like CEX arb write real profit);
-    # fall back to size_usdc for older strategies that don't set pnl_usdc.
+    # A_M1 triangular arb logs to strategy_executions — merge as primary source
+    exec_trades_display = []
+    exec_trades_stats = []
+    if strategy_id in _EXECUTION_TABLE_STRATEGIES:
+        executions_display = safe_query(
+            lambda: db.table("strategy_executions").select("*")
+            .eq("strategy_id", strategy_id)
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        exec_trades_display = [_execution_to_trade(e) for e in executions_display]
+
+        executions_all = safe_query(
+            lambda: db.table("strategy_executions")
+            .select("status,net_profit_usdc,trade_size_usdc,is_paper")
+            .eq("strategy_id", strategy_id)
+            .limit(5000)
+            .execute()
+        )
+        # Convert executions to the same shape as all_trades_stats for uniform processing
+        for e in executions_all:
+            net = float(e.get("net_profit_usdc") or 0)
+            st = e.get("status", "")
+            outcome = ("won" if net > 0 else "lost") if st in ("success", "completed") else ("lost" if st == "failed" else "pending")
+            exec_trades_stats.append({
+                "outcome": outcome,
+                "pnl_usdc": net,
+                "size_usdc": float(e.get("trade_size_usdc") or 0),
+                "is_paper": e.get("is_paper"),
+            })
+
+    # Combine: executions-derived rows take precedence for A_M1
+    all_trades_stats = exec_trades_stats + all_trades_stats
+    # Merge display trades, sort by created_at descending, keep top 100
+    trades_combined = exec_trades_display + trades_from_table
+    trades_combined.sort(key=lambda t: t.get("created_at") or "", reverse=True)
+    trades = trades_combined[:100]
+
+    # Compute stats from ALL trades (not just the display limit)
     def _trade_pnl(t):
         v = t.get("pnl_usdc")
         return float(v) if v is not None else float(t.get("size_usdc", 0))
+    won = [t for t in all_trades_stats if t.get("outcome") == "won"]
+    lost = [t for t in all_trades_stats if t.get("outcome") == "lost"]
     total_pnl = sum(_trade_pnl(t) for t in won) + sum(_trade_pnl(t) for t in lost)
-    paper_trades = [t for t in trades if t.get("is_paper")]
-    live_trades = [t for t in trades if not t.get("is_paper")]
+    paper_trades = [t for t in all_trades_stats if t.get("is_paper")]
+    live_trades = [t for t in all_trades_stats if not t.get("is_paper")]
 
     # For funding-rate strategies (A_M2): stats live in funding_positions, not trades.
     # Each closed position = one trade cycle; total_pnl_usdc is the real result.
@@ -680,7 +1041,7 @@ def get_strategy_detail(strategy_id: str):
             "win_rate": round(win_rate, 1),
             "total_pnl_usdc": round(total_pnl, 2),
             "open_collected_usdc": round(open_collected, 4),   # portion of total_pnl from open positions
-            "total_trades": len(trades) + len(funding_closed),  # trades table + closed funding positions
+            "total_trades": len(all_trades_stats) + len(funding_closed),  # strategy_executions + trades + closed funding positions
             "paper_trades": len(paper_trades),
             "live_trades": len(live_trades),
             "wins": len(won),
@@ -944,12 +1305,54 @@ def reset_and_allocate(strategy_id: str, body: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update capital: {e}")
 
-    # ── 6. Delete trades ──────────────────────────────────────────────────────
+    # ── 6. Delete trades in batches of 200 (avoids statement timeout on large tables) ──
     trades_cleared = len(paper_trades)
     try:
-        db.table("trades").delete().eq("strategy_id", strategy_id).eq("is_paper", is_paper).execute()
+        BATCH = 200
+        deleted_total = 0
+        while True:
+            # Fetch next batch of IDs
+            id_rows = safe_query(
+                lambda: db.table("trades").select("id")
+                .eq("strategy_id", strategy_id)
+                .eq("is_paper", is_paper)
+                .limit(BATCH)
+                .execute()
+            )
+            if not id_rows:
+                break
+            ids = [r["id"] for r in id_rows if r.get("id")]
+            if not ids:
+                break
+            db.table("trades").delete().in_("id", ids).execute()
+            deleted_total += len(ids)
+            if len(ids) < BATCH:
+                break
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear trades: {e}")
+
+    # ── 6b. Also clear strategy_executions for this strategy (A_M1 logs here) ──
+    exec_cleared = 0
+    try:
+        BATCH = 200
+        while True:
+            id_rows = safe_query(
+                lambda: db.table("strategy_executions").select("id")
+                .eq("strategy_id", strategy_id)
+                .limit(BATCH)
+                .execute()
+            )
+            if not id_rows:
+                break
+            ids = [r["id"] for r in id_rows if r.get("id")]
+            if not ids:
+                break
+            db.table("strategy_executions").delete().in_("id", ids).execute()
+            exec_cleared += len(ids)
+            if len(ids) < BATCH:
+                break
+    except Exception:
+        pass  # table may not exist
 
     # ── 7. Log reset event (best-effort — table may not exist yet) ────────────
     try:
@@ -959,7 +1362,7 @@ def reset_and_allocate(strategy_id: str, body: dict):
             "old_capital":     old_capital,
             "pnl_compounded":  total_pnl,
             "new_capital":     new_capital,
-            "trades_cleared":  trades_cleared,
+            "trades_cleared":  trades_cleared + exec_cleared,
             "reset_at":        datetime.utcnow().isoformat(),
         }).execute()
     except Exception:
@@ -1393,6 +1796,127 @@ def get_analytics(mode: str = "paper"):
         "strategy_breakdown": strategy_breakdown,
         "improvements": improvements,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /api/strategies/A_M1_triangular_arb/live-triangles
+# Proxies to scanner health API on port 8080 for real-time triangle data
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/strategies/A_M1_triangular_arb/live-triangles")
+async def get_live_triangles(limit: int = 50):
+    """Proxy live triangle data from scanner health API."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{SCANNER_HEALTH_URL}/api/strategies/A_M1_triangular_arb/live-triangles",
+                params={"limit": limit},
+            )
+            if r.status_code == 200:
+                return r.json()
+    except Exception:
+        pass
+    return {
+        "strategy_id": "A_M1_triangular_arb",
+        "status": "offline",
+        "graph_stats": {},
+        "triangles_evaluated": [],
+        "top_opportunities": [],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GET /api/strategies/{id}/promotion-gates
+# Proxies to scanner health API on port 8080
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/strategies/{strategy_id}/promotion-gates")
+async def get_promotion_gates(strategy_id: str):
+    """Proxy promotion-gates from scanner health API."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{SCANNER_HEALTH_URL}/api/strategies/{strategy_id}/promotion-gates"
+            )
+            if r.status_code == 200:
+                return r.json()
+    except Exception as e:
+        return {"all_passed": False, "strategy_id": strategy_id, "error": str(e), "gates": {}}
+    return {"all_passed": False, "strategy_id": strategy_id, "gates": {}}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIVE-TEST CONTROL — proxy to scanner for arm/disarm/toggle
+# Scanner's LiveTestState backs these; cross-process sync via Redis every 2s
+# ─────────────────────────────────────────────────────────────────────────────
+from pydantic import BaseModel
+
+
+class LiveTestArmBody(BaseModel):
+    count: int
+    size_usdc: float | None = None
+    cooldown_s: float | None = None
+
+
+class TradingToggleBody(BaseModel):
+    master_enabled: bool | None = None
+    dry_run_enabled: bool | None = None
+    size_usdc: float | None = None
+    cooldown_s: float | None = None
+
+
+@app.get("/api/strategies/{strategy_id}/live-test/status")
+async def proxy_live_test_status(strategy_id: str):
+    """Proxy: current armed/master/dry-run state + last-fire result."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(
+                f"{SCANNER_HEALTH_URL}/api/strategies/{strategy_id}/live-test/status"
+            )
+            if r.status_code == 200:
+                return r.json()
+            return {"strategy_id": strategy_id, "error": f"scanner {r.status_code}", "offline": True}
+    except Exception as e:
+        return {"strategy_id": strategy_id, "error": str(e), "offline": True}
+
+
+@app.post("/api/strategies/{strategy_id}/live-test/arm")
+async def proxy_live_test_arm(strategy_id: str, body: LiveTestArmBody):
+    """Proxy: queue N live-test fires."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{SCANNER_HEALTH_URL}/api/strategies/{strategy_id}/live-test/arm",
+                json=body.model_dump(exclude_none=True),
+            )
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"scanner unreachable: {e}")
+
+
+@app.post("/api/strategies/{strategy_id}/live-test/disarm")
+async def proxy_live_test_disarm(strategy_id: str):
+    """Proxy: reset armed_count to 0."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{SCANNER_HEALTH_URL}/api/strategies/{strategy_id}/live-test/disarm"
+            )
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"scanner unreachable: {e}")
+
+
+@app.post("/api/strategies/{strategy_id}/trading/toggle")
+async def proxy_trading_toggle(strategy_id: str, body: TradingToggleBody):
+    """Proxy: set master/dry-run/size/cooldown."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.post(
+                f"{SCANNER_HEALTH_URL}/api/strategies/{strategy_id}/trading/toggle",
+                json=body.model_dump(exclude_none=True),
+            )
+            return r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"scanner unreachable: {e}")
 
 
 if __name__ == "__main__":

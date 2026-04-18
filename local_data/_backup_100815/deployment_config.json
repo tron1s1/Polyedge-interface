@@ -1,0 +1,10 @@
+[
+  {
+    "key": "global_regime",
+    "value": "BULL_RANGING"
+  },
+  {
+    "key": "kill_switch_global",
+    "value": "false"
+  }
+]

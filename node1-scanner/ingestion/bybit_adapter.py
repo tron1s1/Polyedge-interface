@@ -3,6 +3,7 @@ Bybit adapter. Focuses on perpetual futures and funding rates.
 Funding rate harvest (A_M2) depends entirely on this adapter.
 """
 import os
+import time
 from typing import List, Dict
 from datetime import datetime
 from ingestion.base_adapter import BaseMarketAdapter
@@ -86,10 +87,12 @@ class BybitAdapter(BaseMarketAdapter):
                 })
                 # Cache price so A_M2 can trade symbols not listed on Binance
                 await self._cache.set(f"price:bybit:{symbol}", price)
+                await self._cache.set(f"price_ts:bybit:{symbol}", time.monotonic())
+                await self._cache.set(f"volume24h:bybit:{symbol}", float(item.get("volume24h", 0)) * price)
 
                 markets.append(market)
 
-            logger.info("bybit_markets_fetched", count=len(markets))
+            logger.debug("bybit_markets_fetched", count=len(markets))
             return markets
 
         except Exception as e:

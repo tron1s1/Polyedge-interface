@@ -157,10 +157,13 @@ class IndiaTaxEngine:
                 "amount_reserved_usdc": tax_calc.amount_reserved_usdc,
                 "amount_reinvested_usdc": tax_calc.amount_reinvested_usdc,
             })
-        try:
-            self._db.table("tax_events").insert(record).execute()
-        except Exception as e:
-            logger.warning("tax_log_error", error=str(e))
+        import asyncio as _asyncio
+        def _write_tax():
+            try:
+                self._db.table("tax_events").insert(record).execute()
+            except Exception as e:
+                logger.warning("tax_log_error", error=str(e))
+        _asyncio.get_event_loop().run_in_executor(None, _write_tax)
 
     async def _get_usd_inr_rate(self) -> float:
         """Get live USD/INR rate. Falls back to 84.0."""
@@ -191,9 +194,14 @@ class IndiaTaxEngine:
         """Summary for dashboard display."""
         fy = self._get_financial_year()
         try:
-            result = self._db.table("tax_events").select("*").eq(
-                "financial_year", fy
-            ).execute()
+            import asyncio as _asyncio
+            loop = _asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._db.table("tax_events").select("*").eq(
+                    "financial_year", fy
+                ).execute()),
+                timeout=8.0,
+            )
             events = result.data or []
             gains = [e for e in events if e.get("event_type") == "GAIN"]
             losses = [e for e in events if e.get("event_type") == "LOSS"]

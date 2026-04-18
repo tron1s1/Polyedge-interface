@@ -7,6 +7,7 @@ Coinbase uses BTC-USDT product IDs. We normalise to BTCUSDT convention.
 Note: Coinbase has fewer USDT pairs than Binance/Bybit/KuCoin; many assets
 only have USD pairs. We filter to -USDT products only for apples-to-apples arb.
 """
+import time
 from typing import List
 from datetime import datetime
 from ingestion.base_adapter import BaseMarketAdapter
@@ -100,6 +101,8 @@ class CoinbaseAdapter(BaseMarketAdapter):
 
                     # Cache price — used by A_CEX_cross_arb._check_pair("coinbase", ...)
                     await self._cache.set(f"price:coinbase:{symbol}", price)
+                    await self._cache.set(f"price_ts:coinbase:{symbol}", time.monotonic())
+                    await self._cache.set(f"volume24h:coinbase:{symbol}", volume_24h)
 
                     markets.append(market)
 
@@ -109,7 +112,7 @@ class CoinbaseAdapter(BaseMarketAdapter):
                 if not has_next or not cursor:
                     break
 
-            logger.info("coinbase_markets_fetched", count=len(markets))
+            logger.debug("coinbase_markets_fetched", count=len(markets))
             return markets
 
         except Exception as e:
@@ -129,6 +132,7 @@ class CoinbaseAdapter(BaseMarketAdapter):
             data = resp.json()
             price = float(data.get("price") or data.get("mid_market_price") or 0)
             await self._cache.set(f"price:coinbase:{symbol}", price)
+            await self._cache.set(f"price_ts:coinbase:{symbol}", time.monotonic())
             return UnifiedMarket(
                 market_id=f"coinbase_{symbol}",
                 exchange="coinbase",

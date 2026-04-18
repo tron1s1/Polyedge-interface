@@ -35,8 +35,8 @@ class CryptocomAdapter(BaseMarketAdapter):
         self._api_key    = os.getenv("CRYPTOCOM_API_KEY", "")
         self._api_secret = os.getenv("CRYPTOCOM_API_SECRET", "")
         if self._api_key:
-            logger.info("cryptocom_credentials_loaded",
-                        key_prefix=self._api_key[:6] + "***")
+            logger.debug("cryptocom_credentials_loaded",
+                         key_prefix=self._api_key[:6] + "***")
         else:
             logger.warning("cryptocom_no_credentials",
                            note="public data only; set CRYPTOCOM_API_KEY for live trading")
@@ -102,10 +102,12 @@ class CryptocomAdapter(BaseMarketAdapter):
 
                 # Cache price — used by A_CEX_cross_arb._check_pair("cryptocom", ...)
                 await self._cache.set(f"price:cryptocom:{symbol}", price)
+                await self._cache.set(f"price_ts:cryptocom:{symbol}", time.monotonic())
+                await self._cache.set(f"volume24h:cryptocom:{symbol}", volume_24h)
 
                 markets.append(market)
 
-            logger.info("cryptocom_markets_fetched", count=len(markets))
+            logger.debug("cryptocom_markets_fetched", count=len(markets))
             return markets
 
         except Exception as e:
@@ -127,6 +129,7 @@ class CryptocomAdapter(BaseMarketAdapter):
             items = resp.json().get("result", {}).get("data", [])
             price = float(items[0].get("a") or items[0].get("k") or 0) if items else 0.0
             await self._cache.set(f"price:cryptocom:{symbol}", price)
+            await self._cache.set(f"price_ts:cryptocom:{symbol}", time.monotonic())
             return UnifiedMarket(
                 market_id=f"cryptocom_{symbol}",
                 exchange="cryptocom",

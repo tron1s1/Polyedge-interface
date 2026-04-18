@@ -7,6 +7,7 @@ REST: Full market list on startup + periodic refresh.
 import asyncio
 import os
 import json
+import time
 from typing import List, Dict, Optional
 from datetime import datetime
 from ingestion.base_adapter import BaseMarketAdapter
@@ -103,8 +104,10 @@ class BinanceAdapter(BaseMarketAdapter):
 
                 # Cache price for fast lookup
                 await self._cache.set(f"price:binance:{symbol}", market.price)
+                await self._cache.set(f"price_ts:binance:{symbol}", time.monotonic())
+                await self._cache.set(f"volume24h:binance:{symbol}", market.volume_24h)
 
-            logger.info("binance_markets_fetched", count=len(markets))
+            logger.debug("binance_markets_fetched", count=len(markets))
             return markets
 
         except Exception as e:
@@ -241,6 +244,7 @@ class BinanceWebSocketFeed(PersistentWebSocket):
 
             # Update L1 cache immediately (0.01ms)
             await self._cache.set(f"price:binance:{symbol}", price)
+            await self._cache.set(f"price_ts:binance:{symbol}", time.monotonic())
 
             # Calculate price change since last tick
             prev = self._prev_prices.get(symbol, price)

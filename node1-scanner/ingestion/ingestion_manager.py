@@ -89,7 +89,7 @@ class MarketIngester:
                 m.funding = funding_rates[m.symbol]
 
         self._market_cache = all_markets
-        logger.info("ingestion_complete",
+        logger.debug("ingestion_complete",
                     total_markets=len(all_markets),
                     exchanges=list(exchange_markets.keys()))
         return all_markets

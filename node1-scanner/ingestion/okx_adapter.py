@@ -3,6 +3,7 @@ OKX adapter. Used as cross-exchange arb target vs Binance.
 When OKX price differs from Binance by > 0.15%: A_CEX strategy fires.
 """
 import os
+import time
 from typing import List
 from datetime import datetime
 from ingestion.base_adapter import BaseMarketAdapter
@@ -50,6 +51,8 @@ class OKXAdapter(BaseMarketAdapter):
                 )
                 market.okx_price = price
                 await self._cache.set(f"price:okx:{symbol}", price)
+                await self._cache.set(f"price_ts:okx:{symbol}", time.monotonic())
+                await self._cache.set(f"volume24h:okx:{symbol}", float(item.get("volCcy24h", 0)))
                 markets.append(market)
 
             logger.info("okx_markets_fetched", count=len(markets))

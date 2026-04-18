@@ -187,8 +187,8 @@ class KillSwitchBus:
             "last_updated": time.monotonic(),
         })
 
-        # Publish snapshot for dashboard
-        self._db.table("risk_snapshots").insert({
+        # Publish snapshot for dashboard (fire-and-forget, non-blocking)
+        snapshot = {
             "node_id": self._node_id,
             "regime": regime,
             "total_capital_usdc": current_capital,
@@ -197,18 +197,28 @@ class KillSwitchBus:
             "daily_pnl_usdc": daily_pnl,
             "circuit_breakers_active": list(blocked),
             "kelly_multiplier": kelly,
-        }).execute()
+        }
+        def _push_snapshot():
+            try:
+                self._db.table("risk_snapshots").insert(snapshot).execute()
+            except Exception:
+                pass
+        asyncio.get_event_loop().run_in_executor(None, _push_snapshot)
 
     async def _check_global_kill_switch(self) -> bool:
-        """Read global kill switch from Supabase. Cache it."""
+        """Read global kill switch from Supabase. Cache it. Non-blocking."""
         try:
             cached = await self._cache.get("risk:global_kill")
             if cached is not None:
                 return cached
 
-            result = self._db.table("deployment_config").select("value").eq(
-                "key", "kill_switch_global"
-            ).single().execute()
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: self._db.table("deployment_config").select("value").eq(
+                    "key", "kill_switch_global"
+                ).single().execute()),
+                timeout=5.0,
+            )
 
             is_killed = result.data.get("value", "false").lower() == "true"
             await self._cache.set("risk:global_kill", is_killed)

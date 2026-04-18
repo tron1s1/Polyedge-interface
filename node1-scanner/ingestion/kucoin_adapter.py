@@ -4,6 +4,7 @@ No auth required for market data. KuCoin uses BTC-USDT symbol format;
 we normalise to BTCUSDT to match Binance/Bybit convention.
 Public REST: https://api.kucoin.com/api/v1/market/allTickers
 """
+import time
 from typing import List
 from datetime import datetime
 from ingestion.base_adapter import BaseMarketAdapter
@@ -84,10 +85,12 @@ class KuCoinAdapter(BaseMarketAdapter):
 
                 # Cache price — used by A_CEX_cross_arb._check_pair("kucoin", ...)
                 await self._cache.set(f"price:kucoin:{symbol}", price)
+                await self._cache.set(f"price_ts:kucoin:{symbol}", time.monotonic())
+                await self._cache.set(f"volume24h:kucoin:{symbol}", volume_24h)
 
                 markets.append(market)
 
-            logger.info("kucoin_markets_fetched", count=len(markets))
+            logger.debug("kucoin_markets_fetched", count=len(markets))
             return markets
 
         except Exception as e:
@@ -108,6 +111,7 @@ class KuCoinAdapter(BaseMarketAdapter):
             data = resp.json().get("data", {})
             price = float(data.get("last") or 0)
             await self._cache.set(f"price:kucoin:{symbol}", price)
+            await self._cache.set(f"price_ts:kucoin:{symbol}", time.monotonic())
             return UnifiedMarket(
                 market_id=f"kucoin_{symbol}",
                 exchange="kucoin",

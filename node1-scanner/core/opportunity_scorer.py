@@ -202,7 +202,7 @@ class OpportunityScorer:
         # Filter exceptions
         clean = [m for m in scored if isinstance(m, UnifiedMarket)]
 
-        logger.info("scoring_complete",
+        logger.debug("scoring_complete",
                     total=len(markets),
                     scored=len(clean),
                     duration_ms=round(duration, 2))

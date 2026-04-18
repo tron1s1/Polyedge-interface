@@ -142,13 +142,11 @@ class MarketRegimeDetector:
                 "fear_greed": fg,
             })
 
-            # Update Supabase
-            self._db.table("deployment_config").update({
-                "value": regime,
-                "updated_at": datetime.utcnow().isoformat()
-            }).eq("key", "global_regime").execute()
-
-            self._db.table("market_regime").insert({
+            # Update Supabase (fire-and-forget, non-blocking)
+            import asyncio as _asyncio
+            _regime = regime
+            _ts = datetime.utcnow().isoformat()
+            _row = {
                 "regime": regime,
                 "btc_change_1h": btc_1h,
                 "btc_change_4h": btc_4h,
@@ -157,7 +155,16 @@ class MarketRegimeDetector:
                 "funding_rate": funding_rate,
                 "kelly_multiplier": REGIME_KELLY[regime],
                 "paused_strategies": REGIME_PAUSED.get(regime, []),
-            }).execute()
+            }
+            def _write_regime():
+                try:
+                    self._db.table("deployment_config").update({
+                        "value": _regime, "updated_at": _ts
+                    }).eq("key", "global_regime").execute()
+                    self._db.table("market_regime").insert(_row).execute()
+                except Exception:
+                    pass
+            _asyncio.get_event_loop().run_in_executor(None, _write_regime)
 
             # Update Telegram alert
             if regime in ["BLACK_SWAN", "CRASH_MAJOR"]:
