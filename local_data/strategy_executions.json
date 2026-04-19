@@ -2363,5 +2363,562 @@
     "error": null,
     "id": "05d21cd2-f0d8-4c5f-b22e-d0beb00eef58",
     "created_at": "2026-04-18T23:08:15.735749"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_\u5e01\u5b89\u4eba\u751f_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.15224241011533302,
+    "net_profit_usdc": 0.38060602528833254,
+    "trade_size_usdc": 250,
+    "execution_ms": 2.795400010654703,
+    "status": "success",
+    "error": null,
+    "id": "caac2404-9114-4256-a279-99636fe8387a",
+    "created_at": "2026-04-18T23:18:41.663260"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_\u5e01\u5b89\u4eba\u751f_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": -0.43295,
+    "net_profit_usdc": 0.0,
+    "trade_size_usdc": 10.0,
+    "execution_ms": 5995.3,
+    "status": "failed",
+    "error": null,
+    "execution_mode": "live_dry_run",
+    "outcome_status": "COMPLETE",
+    "latency_class": "timeout",
+    "expected_net_pct": 0.31632472320799465,
+    "actual_net_pct": -0.43295,
+    "required_edge_pct": 0.17,
+    "expected_pnl_usdc": 0.031632472320799465,
+    "fees_paid_usdc": 0.0,
+    "edge_lost_to_slippage_pct": 0.7492747232079946,
+    "scanner_prices": {
+      "USDCUSDT": 0.99949,
+      "\u5e01\u5b89\u4eba\u751fUSDC": 0.4887,
+      "\u5e01\u5b89\u4eba\u751fUSDT": 0.4911
+    },
+    "actual_fill_prices": {
+      "USDCUSDT": 0.99949,
+      "\u5e01\u5b89\u4eba\u751fUSDC": 0.501,
+      "\u5e01\u5b89\u4eba\u751fUSDT": 0.4997
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 0.0,
+      "leg2": 251.69,
+      "leg3": -175.12
+    },
+    "per_leg_latency_ms": {
+      "leg1": 127.3,
+      "leg2": 5992.8,
+      "leg3": 5992.64
+    },
+    "per_leg_status": {
+      "leg1": "DRY_RUN_REJECTED",
+      "leg2": "DRY_RUN_REJECTED",
+      "leg3": "DRY_RUN_REJECTED"
+    },
+    "id": "c9a9ca4f-4f5e-4f4c-9985-ccc6c4644712",
+    "created_at": "2026-04-18T23:18:48.217298"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_FUN_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.041687092868780695,
+    "net_profit_usdc": 0.10421773217195174,
+    "trade_size_usdc": 250,
+    "execution_ms": 911.992100009229,
+    "status": "success",
+    "error": null,
+    "id": "8db292d0-456d-4f82-a81a-5e7e95a7dd72",
+    "created_at": "2026-04-18T23:32:16.427944"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_\u5e01\u5b89\u4eba\u751f_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.26890799344598815,
+    "net_profit_usdc": 0.6722699836149704,
+    "trade_size_usdc": 250,
+    "execution_ms": 27.216800008318387,
+    "status": "success",
+    "error": null,
+    "id": "892dd676-4836-4d86-8e56-3ef8038dd26d",
+    "created_at": "2026-04-18T23:36:47.514985"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_\u5e01\u5b89\u4eba\u751f_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": -0.29,
+    "net_profit_usdc": -0.725,
+    "trade_size_usdc": 250,
+    "execution_ms": 202.13,
+    "status": "failed",
+    "error": "Partial fill hedged: \u5e01\u5b89\u4eba\u751fUSDT bid 0.472037 < limit 0.475167 (tol 7.0bps)",
+    "execution_mode": "paper_sim_latency",
+    "outcome_status": "PARTIAL_HEDGED",
+    "latency_class": "timeout",
+    "expected_net_pct": 0.205406,
+    "actual_net_pct": -0.29,
+    "required_edge_pct": 0.17,
+    "expected_pnl_usdc": 0.513516,
+    "fees_paid_usdc": 0.375,
+    "edge_lost_to_slippage_pct": 0.495406,
+    "scanner_prices": {
+      "USDCUSDT": 0.99949,
+      "\u5e01\u5b89\u4eba\u751fUSDC": 0.4737,
+      "\u5e01\u5b89\u4eba\u751fUSDT": 0.4755
+    },
+    "actual_fill_prices": {
+      "USDCUSDT": 0.99949,
+      "\u5e01\u5b89\u4eba\u751fUSDC": 0.4735,
+      "\u5e01\u5b89\u4eba\u751fUSDT": 0.47203732604198895
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 0.0,
+      "leg2": -4.22,
+      "leg3": 72.82
+    },
+    "per_leg_latency_ms": {
+      "leg1": 88.34,
+      "leg2": 68.62,
+      "leg3": 44.75
+    },
+    "per_leg_status": {
+      "leg1": "FILLED",
+      "leg2": "FILLED",
+      "leg3": "CANCELED_NO_FILL"
+    },
+    "id": "9ea119fe-fc16-4d7a-b59a-22e4556a8aa0",
+    "created_at": "2026-04-18T23:36:48.112830"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_ACX_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.047408823600236794,
+    "net_profit_usdc": 0.11852205900059198,
+    "trade_size_usdc": 250,
+    "execution_ms": 1.9708000036189333,
+    "status": "success",
+    "error": null,
+    "id": "b6a01d2c-092b-4c0b-823a-48beac801d3b",
+    "created_at": "2026-04-18T23:46:27.023550"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDC_BNB_ERA_USDC_0",
+    "is_paper": true,
+    "net_profit_pct": 0.06209180319995955,
+    "net_profit_usdc": 0.15522950799989887,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.0759000073885545,
+    "status": "success",
+    "error": null,
+    "id": "26ef48b9-6615-4e1f-a274-463a3b14a827",
+    "created_at": "2026-04-18T23:52:05.518511"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.44663637489430474,
+    "net_profit_usdc": 1.1165909372357619,
+    "trade_size_usdc": 250,
+    "execution_ms": 36.14259998721536,
+    "status": "success",
+    "error": null,
+    "id": "21062bba-76f0-47c7-9562-7692cd7b170e",
+    "created_at": "2026-04-19T00:00:35.710956"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_ENJ_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.10065083090302629,
+    "net_profit_usdc": 0.2516270772575657,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.1790000066393986,
+    "status": "success",
+    "error": null,
+    "id": "4368928c-a713-4783-8680-e529f6502785",
+    "created_at": "2026-04-19T00:02:33.629486"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_ENJ_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.13600899760990437,
+    "net_profit_usdc": 0.3400224940247609,
+    "trade_size_usdc": 250,
+    "execution_ms": 4.085300010046922,
+    "status": "success",
+    "error": null,
+    "id": "f292e0f0-bca7-439e-a9c8-b0047b1436a0",
+    "created_at": "2026-04-19T00:02:38.664562"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDC_API3_USDT_USDC_0",
+    "is_paper": true,
+    "net_profit_pct": 0.0,
+    "net_profit_usdc": 0.0,
+    "trade_size_usdc": 250,
+    "execution_ms": 0.51,
+    "status": "failed",
+    "error": "No legs filled \u2014 API3USDC ask 0.376689 > limit 0.373761 (tol 7.0bps)",
+    "execution_mode": "paper_sim_latency",
+    "outcome_status": "NO_FILL",
+    "latency_class": "fast",
+    "expected_net_pct": 0.252712,
+    "actual_net_pct": 0.0,
+    "required_edge_pct": 0.17,
+    "expected_pnl_usdc": 0.63178,
+    "fees_paid_usdc": 0.0,
+    "edge_lost_to_slippage_pct": 0.252712,
+    "scanner_prices": {
+      "API3USDC": 0.3735,
+      "API3USDT": 0.3751,
+      "USDCUSDT": 0.9995
+    },
+    "actual_fill_prices": {
+      "API3USDC": 0.3766892570835093
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 85.39
+    },
+    "per_leg_latency_ms": {
+      "leg1": 0.48
+    },
+    "per_leg_status": {
+      "leg1": "CANCELED_NO_FILL"
+    },
+    "id": "b4167e8c-9194-4b6f-ad97-ebcfa5aa3b96",
+    "created_at": "2026-04-19T00:02:43.145151"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_API3_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": -0.145,
+    "net_profit_usdc": -0.3625,
+    "trade_size_usdc": 250,
+    "execution_ms": 13.31,
+    "status": "failed",
+    "error": "Partial fill hedged: API3USDC ask 0.376497 > limit 0.373761 (tol 7.0bps)",
+    "execution_mode": "paper_sim_latency",
+    "outcome_status": "PARTIAL_HEDGED",
+    "latency_class": "normal",
+    "expected_net_pct": 0.306166,
+    "actual_net_pct": -0.145,
+    "required_edge_pct": 0.17,
+    "expected_pnl_usdc": 0.765415,
+    "fees_paid_usdc": 0.1875,
+    "edge_lost_to_slippage_pct": 0.451166,
+    "scanner_prices": {
+      "USDCUSDT": 0.9995,
+      "API3USDC": 0.3735,
+      "API3USDT": 0.3753
+    },
+    "actual_fill_prices": {
+      "USDCUSDT": 0.9995,
+      "API3USDC": 0.37649721280000004
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 0.0,
+      "leg2": 80.25
+    },
+    "per_leg_latency_ms": {
+      "leg1": 9.46,
+      "leg2": 3.79
+    },
+    "per_leg_status": {
+      "leg1": "FILLED",
+      "leg2": "CANCELED_NO_FILL"
+    },
+    "id": "50513800-b106-4e98-b48a-48bd7c7f8328",
+    "created_at": "2026-04-19T00:02:43.306532"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "BNB_WAL_FDUSD_BNB_0",
+    "is_paper": true,
+    "net_profit_pct": -0.145,
+    "net_profit_usdc": -0.3625,
+    "trade_size_usdc": 250,
+    "execution_ms": 6.0,
+    "status": "failed",
+    "error": "Partial fill hedged: WALFDUSD bid 0.073056 < limit 0.073748 (tol 7.0bps)",
+    "execution_mode": "paper_sim_latency",
+    "outcome_status": "PARTIAL_HEDGED",
+    "latency_class": "fast",
+    "expected_net_pct": 0.220744,
+    "actual_net_pct": -0.145,
+    "required_edge_pct": 0.205,
+    "expected_pnl_usdc": 0.551859,
+    "fees_paid_usdc": 0.1875,
+    "edge_lost_to_slippage_pct": 0.365744,
+    "scanner_prices": {
+      "WALBNB": 0.0001165,
+      "WALFDUSD": 0.0738,
+      "BNBFDUSD": 630.66
+    },
+    "actual_fill_prices": {
+      "WALBNB": 0.0001165,
+      "WALFDUSD": 0.07305593370235391
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 0.0,
+      "leg2": 100.82
+    },
+    "per_leg_latency_ms": {
+      "leg1": 4.51,
+      "leg2": 1.46
+    },
+    "per_leg_status": {
+      "leg1": "FILLED",
+      "leg2": "CANCELED_NO_FILL"
+    },
+    "id": "f4b91f7b-d801-461c-940e-6884716b8426",
+    "created_at": "2026-04-19T00:02:57.978041"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_WAL_FDUSD_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.0,
+    "net_profit_usdc": 0.0,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.16,
+    "status": "failed",
+    "error": "No legs filled \u2014 WALUSDT ask 0.073455 > limit 0.073451 (tol 7.0bps)",
+    "execution_mode": "paper_sim_latency",
+    "outcome_status": "NO_FILL",
+    "latency_class": "fast",
+    "expected_net_pct": 0.238647,
+    "actual_net_pct": 0.0,
+    "required_edge_pct": 0.17,
+    "expected_pnl_usdc": 0.596619,
+    "fees_paid_usdc": 0.0,
+    "edge_lost_to_slippage_pct": 0.238647,
+    "scanner_prices": {
+      "WALUSDT": 0.0734,
+      "WALFDUSD": 0.0738,
+      "FDUSDUSDT": 0.9992
+    },
+    "actual_fill_prices": {
+      "WALUSDT": 0.07345507920000001
+    },
+    "per_leg_slippage_bps": {
+      "leg1": 7.5
+    },
+    "per_leg_latency_ms": {
+      "leg1": 3.13
+    },
+    "per_leg_status": {
+      "leg1": "CANCELED_NO_FILL"
+    },
+    "id": "267440cf-bbef-4156-8681-106ed6ceec65",
+    "created_at": "2026-04-19T00:02:58.163676"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.1740999984322116,
+    "status": "success",
+    "error": null,
+    "id": "d89beae3-533b-44a1-afa5-a439a40b9f6b",
+    "created_at": "2026-04-19T00:08:02.701363"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 1.6704000008758157,
+    "status": "success",
+    "error": null,
+    "id": "2313d864-37c0-4041-a7c6-f2bba273e158",
+    "created_at": "2026-04-19T00:08:07.697170"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 4.539100002148189,
+    "status": "success",
+    "error": null,
+    "id": "99a954ab-5a3b-4a0c-ae2b-9b409320d88f",
+    "created_at": "2026-04-19T00:08:12.738705"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 0.8818999922368675,
+    "status": "success",
+    "error": null,
+    "id": "24d8bd1e-5dd6-4504-8196-1bab00952708",
+    "created_at": "2026-04-19T00:08:17.811690"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 2.3804000084055588,
+    "status": "success",
+    "error": null,
+    "id": "df303b01-4ef9-494b-9a11-9b5edea3b6aa",
+    "created_at": "2026-04-19T00:08:22.848018"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.5386514121119124,
+    "net_profit_usdc": 1.346628530279781,
+    "trade_size_usdc": 250,
+    "execution_ms": 4.454300011275336,
+    "status": "success",
+    "error": null,
+    "id": "b081d9ec-2e3d-4572-b8e1-1601944fd180",
+    "created_at": "2026-04-19T00:08:27.896277"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_WIN_EUR_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.13262590756435433,
+    "net_profit_usdc": 0.3315647689108858,
+    "trade_size_usdc": 250,
+    "execution_ms": 1.8782999977702275,
+    "status": "success",
+    "error": null,
+    "id": "40bebd05-135f-404d-80a4-5f4b36d87789",
+    "created_at": "2026-04-19T00:13:55.189935"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.09507139094062644,
+    "net_profit_usdc": 0.2376784773515661,
+    "trade_size_usdc": 250,
+    "execution_ms": 4.746900012833066,
+    "status": "success",
+    "error": null,
+    "id": "9a28924e-5238-4983-adf0-1cca2a1fa951",
+    "created_at": "2026-04-19T00:15:05.436811"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.09507139094062644,
+    "net_profit_usdc": 0.2376784773515661,
+    "trade_size_usdc": 250,
+    "execution_ms": 2.5305000017397106,
+    "status": "success",
+    "error": null,
+    "id": "4fcfe15e-76a9-460a-b372-137f08dc63a1",
+    "created_at": "2026-04-19T00:15:10.492204"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.09507139094062644,
+    "net_profit_usdc": 0.2376784773515661,
+    "trade_size_usdc": 250,
+    "execution_ms": 11.735799998859875,
+    "status": "success",
+    "error": null,
+    "id": "5092949f-8709-4908-a98b-18a80d286bf1",
+    "created_at": "2026-04-19T00:15:15.505632"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.059374147220614404,
+    "net_profit_usdc": 0.148435368051536,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.553200003807433,
+    "status": "success",
+    "error": null,
+    "id": "16a40f5a-d9b1-46ed-8b61-0457a124704d",
+    "created_at": "2026-04-19T00:15:20.573945"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.059374147220614404,
+    "net_profit_usdc": 0.148435368051536,
+    "trade_size_usdc": 250,
+    "execution_ms": 19.49409999360796,
+    "status": "success",
+    "error": null,
+    "id": "6e0c77e2-4307-4a79-bff7-1e0209a0d8a1",
+    "created_at": "2026-04-19T00:15:25.695905"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "EUR_WIN_TRX_EUR_0",
+    "is_paper": true,
+    "net_profit_pct": 0.26995365769311164,
+    "net_profit_usdc": 0.6748841442327791,
+    "trade_size_usdc": 250,
+    "execution_ms": 3.3101000008173287,
+    "status": "success",
+    "error": null,
+    "id": "d41100c2-e688-4d69-9a0d-3bac5e86edcb",
+    "created_at": "2026-04-19T00:22:19.101648"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_LDO_FDUSD_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.26649186705569594,
+    "net_profit_usdc": 0.6662296676392399,
+    "trade_size_usdc": 250,
+    "execution_ms": 25.97529999911785,
+    "status": "success",
+    "error": null,
+    "id": "048613b3-5a1a-4ef0-a8c9-ca18f2857374",
+    "created_at": "2026-04-19T00:25:59.735826"
+  },
+  {
+    "strategy_id": "A_M1_triangular_arb",
+    "triangle_id": "USDT_USDC_YB_USDT_0",
+    "is_paper": true,
+    "net_profit_pct": 0.7155074835048403,
+    "net_profit_usdc": 1.7887687087621007,
+    "trade_size_usdc": 250,
+    "execution_ms": 4.589099989971146,
+    "status": "success",
+    "error": null,
+    "id": "421b7877-37f0-4fd8-92fe-7d229a38b086",
+    "created_at": "2026-04-19T00:33:20.152908"
   }
 ]
