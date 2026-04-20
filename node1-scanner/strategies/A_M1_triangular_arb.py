@@ -79,7 +79,7 @@ DEFAULT_CONFIG = {
     "min_net_profit_pct": 0.02,           # Floor; per-triangle threshold usually overrides
     "min_gross_gap_pct": 0.25,            # Gross gap before fees; 3×0.075% + 0.02% net
     "fee_per_leg_pct": 0.075,             # Binance spot 0.10% × 0.75 BNB discount = 0.075%
-    "min_volume_24h_usdc": 5_000,          # Very low: more pairs = more triangles. Fiat pairs are thin but real.
+    "min_volume_24h_usdc": 100_000,        # 20× raise: eliminates WAL/ARS/ZEC (<$20k/day) while keeping PLN/EUR/BRL
     "base_currencies": ["USDT", "USDC", "BTC", "ETH", "BNB", "FDUSD", "EUR", "BRL"],
     "max_triangles_to_check": 8_000,      # More triangles with USDC + BNB as full bases
     # ── Adaptive hot-set scanning (v2) ─────────────────────────────────────
@@ -109,7 +109,7 @@ DEFAULT_CONFIG = {
         "major":  5.0,     # BTC/ETH/BNB/SOL/XRP/DOGE — liquid, small drift
         "midcap": 7.0,     # All other altcoins meeting min_volume
     },
-    "safety_margin_bps": 1.5,              # Extra buffer above breakeven
+    "safety_margin_bps": 0.5,              # Low buffer; dashboard can override to 0 for testing
     # Simulated-latency paper mode: re-read L1 cache at "fill moment" after
     # an injected delay, so paper slippage tracks what live would see.
     "paper_simulate_latency": True,
@@ -150,8 +150,8 @@ DEFAULT_CONFIG = {
     # ── Latency circuit breaker ────────────────────────────────────────────
     # Trip: 30-sample p95 exceeds this → live/dry-run orders refused until
     # p95 drops back below reset threshold for N consecutive samples.
-    "latency_breaker_trip_ms": 40.0,
-    "latency_breaker_reset_ms": 25.0,
+    "latency_breaker_trip_ms": 80.0,       # Raised: survives WS connection warmup (first few orders ~70-90ms)
+    "latency_breaker_reset_ms": 50.0,      # Raised proportionally
     # ── Cross-margin (FUTURE, disabled) ────────────────────────────────────
     # Binance Spot supports 3x cross-margin. On a USDT→BTC→ETH→USDT triangle
     # this is effectively free leverage IF the triangle graph permits borrow
@@ -174,8 +174,10 @@ DEFAULT_CONFIG = {
         "IDR", "VND", "NGN", "RON", "TRY", "GBP", "PKR", "EGP", "PEN",
         # Deprecated/illiquid stablecoins — off-peg pricing is a false signal
         "TUSD", "BUSD", "USDP", "USDD", "GUSD", "USDJ",
+        # ARS: hyperinflationary, extreme bid-ask, never fills — excluded after analysis
+        "ARS",
         # INCLUDED (available on user's Binance):
-        # EUR, BRL, MXN, PLN, COP, ZAR, UAH, ARS, USD, EURI
+        # EUR, BRL, MXN, PLN, COP, ZAR, UAH, USD, EURI
     ],
 }
 

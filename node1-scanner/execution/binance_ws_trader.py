@@ -250,11 +250,39 @@ class BinanceWSTrader:
             raise RuntimeError("ws_trader_not_connected")
 
     def _sign(self, params: Dict[str, Any]) -> str:
-        # Binance canonical form: sorted by key, urlencoded, HMAC-SHA256 hex.
+        """Sign request params. Auto-detects Ed25519 vs HMAC-SHA256 by secret format.
+
+        Ed25519: secret is base64-encoded PKCS#8 DER (44+ chars with +/= chars or
+                 starts with 'MC4'). Returns base64url signature.
+        HMAC:    secret is a 64-char hex string. Returns hex digest.
+        """
         from urllib.parse import urlencode
         qs = urlencode(sorted(params.items()))
+
+        secret = self._api_secret
+        # Ed25519 PKCS#8 DER base64 starts with 'MC4' (30 2e header) or
+        # contains '/' '+' '=' which hex strings never have.
+        _is_ed25519 = (
+            secret.startswith("MC") or
+            "/" in secret or "+" in secret or
+            (len(secret) > 50 and not all(c in "0123456789abcdefABCDEF" for c in secret))
+        )
+
+        if _is_ed25519:
+            try:
+                import base64
+                from cryptography.hazmat.primitives.serialization import load_der_private_key
+                key_bytes = base64.b64decode(secret)
+                private_key = load_der_private_key(key_bytes, password=None)
+                sig_bytes = private_key.sign(qs.encode())
+                # Binance expects base64url (no padding) for Ed25519
+                return base64.urlsafe_b64encode(sig_bytes).rstrip(b"=").decode()
+            except Exception as e:
+                logger.warning("ed25519_sign_failed_falling_back_to_hmac", error=str(e))
+
+        # HMAC-SHA256 fallback
         return hmac.new(
-            self._api_secret.encode(),
+            secret.encode(),
             qs.encode(),
             hashlib.sha256,
         ).hexdigest()
