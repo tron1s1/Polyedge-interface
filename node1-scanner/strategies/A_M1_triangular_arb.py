@@ -2555,7 +2555,7 @@ class Strategy(BaseStrategy):
                 # Approach D rich schema — actual execution reality
                 "execution_mode":       result.execution_mode,
                 "outcome_status":       result.outcome_status,
-                "latency_class":        result.latency_classification,
+                "latency_classification": result.latency_classification,
                 "expected_net_pct":     result.expected_net_pct,
                 "actual_net_pct":       result.actual_net_pct,
                 "required_edge_pct":    result.required_edge_pct,

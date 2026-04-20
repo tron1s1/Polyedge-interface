@@ -707,7 +707,8 @@ def get_execution_reality(strategy_id: str, limit: int = 500):
                 all_slips.append(v)
                 per_triangle_slip.setdefault(tri, []).append(v)
 
-    # Latency percentiles from per_leg_latency_ms sums
+    # Latency percentiles — prefer per_leg_latency_ms sum, fall back to
+    # execution_ms (populated by both paper and live/dry-run paths).
     total_latencies = []
     for r in rich:
         lat = r.get("per_leg_latency_ms") or {}
@@ -715,6 +716,14 @@ def get_execution_reality(strategy_id: str, limit: int = 500):
             try:
                 total = sum(float(v) for v in lat.values())
                 total_latencies.append(total)
+                continue
+            except (TypeError, ValueError):
+                pass
+        # Fallback: execution_ms covers dry-run and legacy rows
+        exec_ms = r.get("execution_ms")
+        if exec_ms is not None:
+            try:
+                total_latencies.append(float(exec_ms))
             except (TypeError, ValueError):
                 pass
 
